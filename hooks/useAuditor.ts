@@ -1,55 +1,119 @@
-import { useState } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+}
 
 export function useAuditor() {
   const [auditResult, setAuditResult] = useState<string>("等待审计指令...");
   const [isAuditing, setIsAuditing] = useState<boolean>(false);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [isStopped, setIsStopped] = useState<boolean>(false);
+  const isModelsFetched = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  const runAudit = async (code: string) => {
+  const fetchModels = useCallback(async () => {
+    if (isModelsFetched.current) return;
+    
+    isModelsFetched.current = true;
+    
+    try {
+      const response = await fetch("/api/audit");
+      const availableModels = await response.json();
+      setModels(availableModels);
+      if (availableModels.length > 0 && !selectedModel) {
+        setSelectedModel(availableModels[0].id);
+      }
+    } catch (error) {
+      console.error("Failed to fetch models:", error);
+      isModelsFetched.current = false;
+    }
+  }, [selectedModel]);
+
+  useEffect(() => {
+    fetchModels();
+  }, []);
+
+  const stopAudit = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      setIsStopped(true);
+      setIsAuditing(false);
+      setAuditResult((prev) => prev + "\n\n---\n\n**⏹️ 用户已停止输出**");
+    }
+  }, []);
+
+  const runAudit = async (code: string, userPrompt?: string, modelId?: string) => {
     if (!code.trim()) return;
 
+    // 取消之前的请求
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
     setIsAuditing(true);
-    setAuditResult(""); // 清空之前的结果
+    setIsStopped(false);
+    setAuditResult("");
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
       const response = await fetch("/api/audit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ 
+          code, 
+          model: modelId || selectedModel,
+          userPrompt 
+        }),
+        signal: abortController.signal,
       });
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      // 关键步骤：获取流式 Reader
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
-      let done = false;
       let accumulatedResult = "";
 
       if (reader) {
-        // 只要没读取完，就一直循环读取
-        while (!done) {
-          const { value, done: readerDone } = await reader.read();
-          done = readerDone;
-          if (value) {
-            // 将读取到的二进制片段解码为文本
-            const chunk = decoder.decode(value, { stream: true });
-            accumulatedResult += chunk;
-            // 实时更新状态，触发 React 重新渲染
-            setAuditResult(accumulatedResult);
-          }
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value, { stream: true });
+          accumulatedResult += chunk;
+          setAuditResult(accumulatedResult);
         }
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (error.name === "AbortError") {
+        console.log("请求被取消");
+        return;
+      }
       console.error("Fetch error:", error);
       setAuditResult(
-        (prev) => prev + "\n\n**请求失败，请检查网络或控制台报错。**",
+        (prev) => prev + "\n\n**请求失败，请检查网络或控制台报错。**"
       );
     } finally {
       setIsAuditing(false);
+      abortControllerRef.current = null;
     }
   };
 
-  return { auditResult, isAuditing, runAudit };
+  return {
+    auditResult,
+    isAuditing,
+    isStopped,
+    runAudit,
+    stopAudit,
+    models,
+    selectedModel,
+    setSelectedModel,
+  };
 }

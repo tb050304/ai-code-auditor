@@ -6,10 +6,10 @@
 
 ## 🎯 核心目标 (Roadmap)
 
-- **Phase 1**: 集成 Monaco Editor，构建左右分屏的沉浸式 Web IDE 界面。
-- **Phase 2**: 打通 Next.js API Routes，实现前后端数据流与流式响应 (Streaming)。
-- **Phase 3**: 接入 DeepSeek 大语言模型，提供代码审计与优化建议。
-- **Phase 4**: 预研 AST (抽象语法树) 解析，实现精准的代码高亮标记与漏洞定位。
+- **Phase 1**: 集成 Monaco Editor，构建左右分屏的沉浸式 Web IDE 界面。 ✅
+- **Phase 2**: 打通 Next.js API Routes，实现前后端数据流与流式响应 (Streaming)。 ✅
+- **Phase 3**: 接入 DeepSeek 大语言模型，提供代码审计与优化建议。 ✅
+- **Phase 4**: 预研 AST (抽象语法树) 解析，实现精准的代码高亮标记与漏洞定位。 ✅
 
 ## 🛠️ 技术栈
 
