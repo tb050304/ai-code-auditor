@@ -41,10 +41,11 @@ export async function POST(req: Request) {
         suggestion: issue.suggestion,
       })),
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("AST analysis error:", error);
+    const message = error instanceof Error && error.message ? error.message : "分析失败";
     return NextResponse.json(
-      { error: error.message || "分析失败" },
+      { error: message },
       { status: 500 }
     );
   }

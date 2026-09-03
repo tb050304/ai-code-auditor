@@ -206,7 +206,8 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
         )}
       </header>
 
-      <div className="flex-1 min-w-0 overflow-hidden">
+      {/* min-h-0 是关键：让该 flex 子项可收缩到实际可用高度，否则会被 Monaco 内容高度撑开，产生多余的空白区可滚动 */}
+      <div className="flex-1 min-w-0 min-h-0 overflow-hidden">
         <Editor
           height="100%"
           width="100%"

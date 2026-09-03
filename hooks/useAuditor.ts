@@ -1,4 +1,18 @@
+// ---------------------------------------------------------------------------
+// useAuditor —— AI 审计执行 Hook
+// ---------------------------------------------------------------------------
+// 职责：负责与 /api/audit 的流式通信（SSE 文本流），以及中止控制。
+// 会话层（useConversations）从它解耦：本 Hook 不直接写会话，
+// 而是通过 onChunk / onStatus 回调把增量内容交还调用方去落会话。
+//
+// 设计要点：
+//   1. history 参数支持多轮上下文（把此前的 user/assistant 消息传给后端）。
+//   2. 每次 startAudit 都会中止上一次仍在进行的请求，避免串流。
+//   3. 出现错误时，把可读错误信息追加到已累积文本末尾，UI 可见但不抛异常。
+// ---------------------------------------------------------------------------
+
 import { useState, useCallback, useRef, useEffect } from "react";
+import type { AuditHistoryMessage } from "@/types";
 
 export interface ModelInfo {
   id: string;
@@ -6,114 +20,132 @@ export interface ModelInfo {
   provider: string;
 }
 
+/** 流状态回调：running / done / error / aborted */
+export type AuditStreamStatus = "running" | "done" | "error" | "aborted";
+
+export interface StartAuditOptions {
+  code: string;
+  userPrompt?: string;
+  modelId?: string;
+  /** 多轮历史（可选），由调用方从当前会话构造 */
+  history?: AuditHistoryMessage[];
+  /** 每次读取到增量时回调；参数为全量累积文本 */
+  onChunk: (content: string) => void;
+  /** 状态变化回调 */
+  onStatus: (status: AuditStreamStatus) => void;
+}
+
+/** 判断是否为“用户主动取消请求”的错误，避免把 AbortError 当真实错误处理 */
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 export function useAuditor() {
-  const [auditResult, setAuditResult] = useState<string>("等待审计指令...");
   const [isAuditing, setIsAuditing] = useState<boolean>(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
-  const [isStopped, setIsStopped] = useState<boolean>(false);
+  // 当前进行中的请求句柄，用于“停止输出”时中止
+  const abortRef = useRef<AbortController | null>(null);
   const isModelsFetched = useRef(false);
-  const abortControllerRef = useRef<AbortController | null>(null);
 
+  // ---------------- 模型列表（一次拉取） ----------------
   const fetchModels = useCallback(async () => {
     if (isModelsFetched.current) return;
-    
     isModelsFetched.current = true;
-    
     try {
       const response = await fetch("/api/audit");
       const availableModels = await response.json();
       setModels(availableModels);
-      if (availableModels.length > 0 && !selectedModel) {
-        setSelectedModel(availableModels[0].id);
-      }
+      setSelectedModel((prev) => prev || availableModels[0]?.id || "");
     } catch (error) {
       console.error("Failed to fetch models:", error);
       isModelsFetched.current = false;
     }
-  }, [selectedModel]);
+  }, []);
 
+  // 挂载后异步拉取可用模型；放入微任务以满足 react-hooks/set-state-in-effect 校验
   useEffect(() => {
-    fetchModels();
-  }, []);
+    queueMicrotask(() => {
+      void fetchModels();
+    });
+  }, [fetchModels]);
 
+  // ---------------- 停止当前审计 ----------------
   const stopAudit = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      setIsStopped(true);
-      setIsAuditing(false);
-      setAuditResult((prev) => prev + "\n\n---\n\n**⏹️ 用户已停止输出**");
-    }
+    const controller = abortRef.current;
+    if (controller) controller.abort();
   }, []);
 
-  const runAudit = async (code: string, userPrompt?: string, modelId?: string) => {
-    if (!code.trim()) return;
+  // ---------------- 启动审计（流式） ----------------
+  const startAudit = useCallback(
+    async ({ code, userPrompt, modelId, history, onChunk, onStatus }: StartAuditOptions) => {
+      if (!code.trim()) return;
 
-    // 取消之前的请求
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+      // 取消上一次请求，确保同一时刻只有一个流在跑
+      if (abortRef.current) abortRef.current.abort();
 
-    setIsAuditing(true);
-    setIsStopped(false);
-    setAuditResult("");
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setIsAuditing(true);
+      onStatus("running");
 
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
+      let accumulated = "";
+      try {
+        const response = await fetch("/api/audit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            code,
+            model: modelId || selectedModel,
+            userPrompt,
+            history,
+          }),
+          signal: controller.signal,
+        });
 
-    try {
-      const response = await fetch("/api/audit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          code, 
-          model: modelId || selectedModel,
-          userPrompt 
-        }),
-        signal: abortController.signal,
-      });
+        if (!response.ok) {
+          throw new Error(`审计服务返回错误：HTTP ${response.status}`);
+        }
+        if (!response.body) {
+          throw new Error("浏览器不支持流式读取");
+        }
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let accumulatedResult = "";
-
-      if (reader) {
-        while (true) {
+        // 逐块读取 SSE 文本流
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
-          
-          const chunk = decoder.decode(value, { stream: true });
-          accumulatedResult += chunk;
-          setAuditResult(accumulatedResult);
+          accumulated += decoder.decode(value, { stream: true });
+          onChunk(accumulated);
         }
+        onStatus("done");
+      } catch (error: unknown) {
+        // 用户主动中止：静默标记为 aborted，不污染内容
+        if (isAbortError(error)) {
+          onStatus("aborted");
+          return;
+        }
+        const message = error instanceof Error ? error.message : "未知错误，请检查控制台。";
+        console.error("Audit stream error:", error);
+        const errorText = `\n\n**审计中断：${message}**`;
+        onChunk(accumulated + errorText);
+        onStatus("error");
+      } finally {
+        setIsAuditing(false);
+        // 仅在仍指向本次请求时清理，避免误清最新请求
+        if (abortRef.current === controller) abortRef.current = null;
       }
-    } catch (error: any) {
-      if (error.name === "AbortError") {
-        console.log("请求被取消");
-        return;
-      }
-      console.error("Fetch error:", error);
-      setAuditResult(
-        (prev) => prev + "\n\n**请求失败，请检查网络或控制台报错。**"
-      );
-    } finally {
-      setIsAuditing(false);
-      abortControllerRef.current = null;
-    }
-  };
+    },
+    [selectedModel]
+  );
 
   return {
-    auditResult,
     isAuditing,
-    isStopped,
-    runAudit,
-    stopAudit,
     models,
     selectedModel,
     setSelectedModel,
+    startAudit,
+    stopAudit,
   };
 }
