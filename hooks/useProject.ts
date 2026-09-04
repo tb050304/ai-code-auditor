@@ -2,6 +2,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getDefaultBackend } from "@/lib/storage";
 import type { Project, FileNode } from "@/lib/storage";
+import { buildTree, type TreeNode } from "@/lib/storage/file-tree";
+import { dirname, joinPath } from "@/lib/storage/path";
 
 export interface UseProjectReturn {
   projects: Project[];
@@ -9,16 +11,23 @@ export interface UseProjectReturn {
   activeProject: Project | null;
   isLoading: boolean;
   isHydrated: boolean;
-  /** 创建并激活一个新项目 */
   createProject: (name: string) => Promise<Project>;
-  /** 切换到某个项目 */
   selectProject: (id: string) => void;
-  /** 删除项目 */
   deleteProject: (id: string) => Promise<void>;
-  /** 刷新项目列表 */
   refreshProjects: () => Promise<void>;
-  /** 读取当前项目根目录文件列表 */
-  rootFiles: FileNode[];
+
+  // ---- 文件树 ----
+  /** 当前项目的完整文件树（根节点） */
+  fileTree: TreeNode | null;
+  /** 刷新当前项目的整个文件树 */
+  refreshFileTree: () => Promise<void>;
+
+  // ---- 文件操作 ----
+  writeFile: (path: string, content: string) => Promise<FileNode>;
+  mkdir: (path: string) => Promise<FileNode>;
+  deleteNode: (path: string) => Promise<void>;
+  renameNode: (oldPath: string, newName: string) => Promise<FileNode>;
+  readFile: (path: string) => Promise<string>;
 }
 
 const STORAGE_KEY = "ai-code-auditor:active-project";
@@ -28,8 +37,20 @@ export function useProject(): UseProjectReturn {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
-  const [rootFiles, setRootFiles] = useState<FileNode[]>([]);
+  const [fileTree, setFileTree] = useState<TreeNode | null>(null);
   const backendRef = useRef(getDefaultBackend());
+
+  // 刷新单个项目的文件树
+  const loadFileTree = useCallback(async (projectId: string) => {
+    try {
+      const allFiles = await backendRef.current.listAllFiles(projectId);
+      const tree = buildTree(allFiles);
+      setFileTree(tree);
+    } catch (e) {
+      console.error("加载文件树失败:", e);
+      setFileTree(null);
+    }
+  }, []);
 
   // 初始加载：列出所有项目 + 恢复上次选中的
   useEffect(() => {
@@ -40,7 +61,6 @@ export function useProject(): UseProjectReturn {
       if (cancelled) return;
       setProjects(list);
 
-      // 从 localStorage 恢复上次选中的项目
       let saved: string | null = null;
       try {
         saved = localStorage.getItem(STORAGE_KEY);
@@ -57,20 +77,18 @@ export function useProject(): UseProjectReturn {
     };
   }, []);
 
-  // 当 activeProject 变化时，读取根目录
+  // 当 activeProject 变化时，加载完整文件树
   useEffect(() => {
     if (!activeProjectId) {
-      setRootFiles([]);
+      setFileTree(null);
       return;
     }
     let cancelled = false;
     (async () => {
-      try {
-        const files = await backendRef.current.readDir(activeProjectId, "/");
-        if (!cancelled) setRootFiles(files);
-      } catch {
-        if (!cancelled) setRootFiles([]);
-      }
+      const allFiles = await backendRef.current.listAllFiles(activeProjectId);
+      if (cancelled) return;
+      const tree = buildTree(allFiles);
+      setFileTree(tree);
     })();
     return () => {
       cancelled = true;
@@ -92,11 +110,15 @@ export function useProject(): UseProjectReturn {
   const refreshProjects = useCallback(async () => {
     const list = await backendRef.current.listProjects();
     setProjects(list);
-    // 如果当前选中的项目没了，清空
     if (activeProjectId && !list.some((p) => p.id === activeProjectId)) {
       setActiveProjectId(list.length > 0 ? list[0].id : null);
     }
   }, [activeProjectId]);
+
+  const refreshFileTree = useCallback(async () => {
+    if (!activeProjectId) return;
+    await loadFileTree(activeProjectId);
+  }, [activeProjectId, loadFileTree]);
 
   const createProject = useCallback(async (name: string) => {
     setIsLoading(true);
@@ -126,6 +148,58 @@ export function useProject(): UseProjectReturn {
     [activeProjectId, projects],
   );
 
+  const writeFile = useCallback(
+    async (path: string, content: string) => {
+      if (!activeProjectId) throw new Error("无活动项目");
+      const normalized = joinPath(path);
+      const node = await backendRef.current.writeFile(activeProjectId, normalized, content);
+      await refreshFileTree();
+      return node;
+    },
+    [activeProjectId, refreshFileTree],
+  );
+
+  const mkdir = useCallback(
+    async (path: string) => {
+      if (!activeProjectId) throw new Error("无活动项目");
+      const normalized = joinPath(path);
+      const node = await backendRef.current.mkdir(activeProjectId, normalized);
+      await refreshFileTree();
+      return node;
+    },
+    [activeProjectId, refreshFileTree],
+  );
+
+  const deleteNode = useCallback(
+    async (path: string) => {
+      if (!activeProjectId) throw new Error("无活动项目");
+      const normalized = joinPath(path);
+      await backendRef.current.delete(activeProjectId, normalized);
+      await refreshFileTree();
+    },
+    [activeProjectId, refreshFileTree],
+  );
+
+  const renameNode = useCallback(
+    async (oldPath: string, newName: string) => {
+      if (!activeProjectId) throw new Error("无活动项目");
+      const parent = dirname(oldPath);
+      const newPath = joinPath(parent, newName);
+      const node = await backendRef.current.rename(activeProjectId, oldPath, newPath);
+      await refreshFileTree();
+      return node;
+    },
+    [activeProjectId, refreshFileTree],
+  );
+
+  const readFile = useCallback(
+    async (path: string) => {
+      if (!activeProjectId) throw new Error("无活动项目");
+      return backendRef.current.readFile(activeProjectId, joinPath(path));
+    },
+    [activeProjectId],
+  );
+
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
 
   return {
@@ -138,6 +212,12 @@ export function useProject(): UseProjectReturn {
     selectProject,
     deleteProject,
     refreshProjects,
-    rootFiles,
+    fileTree,
+    refreshFileTree,
+    writeFile,
+    mkdir,
+    deleteNode,
+    renameNode,
+    readFile,
   };
 }
