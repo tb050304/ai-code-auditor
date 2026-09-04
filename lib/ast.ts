@@ -645,33 +645,34 @@ const ruleNoMagicNumber: Rule = {
 };
 
 /**
- * 规则15: 检测过长的函数
+ * 规则15: 检测过长的函数（超过 30 条语句）
  */
 const ruleNoLongFunction: Rule = {
   id: "no-long-function",
   name: "过长的函数",
   type: "maintainability",
   severity: "warning",
-  description: "函数体过长（超过 50 行），建议拆分为多个小函数",
-  suggestion: "将函数拆分为多个职责单一的小函数",
+  description: "函数体超过 30 条语句，建议拆分为多个职责单一的小函数",
+  suggestion: "将函数拆分为多个小函数，每个函数不超过 20 条语句",
   check: (path) => {
     if (t.isFunctionDeclaration(path.node) || t.isArrowFunctionExpression(path.node) || t.isFunctionExpression(path.node)) {
       const body = path.node.body;
       if (t.isBlockStatement(body)) {
-        const lineCount = body.body.length;
-        if (lineCount > 50) {
+        const stmtCount = body.body.length;
+        if (stmtCount > 30) {
           const loc = getNodeLocation(path.node);
+          const funcName = t.isFunctionDeclaration(path.node) ? path.node.id?.name : "匿名函数";
           return {
             id: "no-long-function",
             name: "过长的函数",
             type: "maintainability",
             severity: "warning",
-            message: `检测到过长的函数（${lineCount} 行），建议拆分`,
+            message: `函数 ${funcName} 过长（${stmtCount} 条语句），建议拆分`,
             startLine: loc.startLine,
             startColumn: loc.startColumn,
             endLine: loc.endLine,
             endColumn: loc.endColumn,
-            suggestion: "将函数拆分为多个职责单一的小函数，每个函数不超过 30 行",
+            suggestion: "将函数拆分为多个职责单一的小函数，每个函数不超过 20 条语句",
           };
         }
       }
@@ -744,43 +745,6 @@ const ruleNoTodoComment: Rule = {
   },
 };
 
-/**
- * 规则20: 检测长函数（>30行）
- */
-const ruleLongFunction: Rule = {
-  id: "no-long-function-30",
-  name: "过长的函数",
-  type: "maintainability",
-  severity: "warning",
-  description: "函数体超过 30 行，建议拆分为多个小函数",
-  suggestion: "将函数拆分为职责单一的小函数",
-  check: (path) => {
-    if (t.isFunctionDeclaration(path.node) || t.isArrowFunctionExpression(path.node) || t.isFunctionExpression(path.node)) {
-      const body = path.node.body;
-      if (t.isBlockStatement(body)) {
-        const lineCount = body.body.length;
-        if (lineCount > 30) {
-          const loc = getNodeLocation(path.node);
-          const funcName = t.isFunctionDeclaration(path.node) ? path.node.id?.name : "匿名函数";
-          return {
-            id: "no-long-function-30",
-            name: "过长的函数",
-            type: "maintainability",
-            severity: "warning",
-            message: `函数 ${funcName} 过长（${lineCount} 行），建议拆分`,
-            startLine: loc.startLine,
-            startColumn: loc.startColumn,
-            endLine: loc.endLine,
-            endColumn: loc.endColumn,
-            suggestion: "将函数拆分为多个职责单一的小函数，每个函数不超过 20 行",
-          };
-        }
-      }
-    }
-    return null;
-  },
-};
-
 // 规则列表
 const rules: Rule[] = [
   ruleNoEval,
@@ -802,7 +766,6 @@ const rules: Rule[] = [
   ruleNoHardcodedPhone,
   ruleNoSuspiciousComment,
   ruleNoTodoComment,
-  ruleLongFunction,
 ];
 
 /**
@@ -927,12 +890,8 @@ export function analyzeCode(code: string, filename: string = "code.js"): Analysi
   const issues: Issue[] = [];
   
   const parseResult = parseCode(code);
-  
-  console.log("AST parsing result:", parseResult.success, parseResult.error);
-  
-  // 即使解析有问题，只要有 AST 就继续分析
+
   if (!parseResult.ast) {
-    console.log("Parsing failed, no AST available");
     return {
       filename,
       issues: [],
@@ -942,8 +901,6 @@ export function analyzeCode(code: string, filename: string = "code.js"): Analysi
       duration: Math.round(performance.now() - startTime),
     };
   }
-  
-  console.log("AST parsing succeeded, traversing...");
 
   traverse(parseResult.ast, {
     enter(path) {
@@ -951,13 +908,12 @@ export function analyzeCode(code: string, filename: string = "code.js"): Analysi
         try {
           const issue = rule.check(path, code);
           if (issue) {
-            console.log("Rule", rule.id, "detected issue:", issue.message);
             issue.codeSnippet = getCodeSnippet(code, issue.startLine, issue.endLine);
             issues.push(issue);
             break;
           }
         } catch (e) {
-          console.error(`Rule ${rule.id} error:`, e);
+          // 单个规则出错不影响整体分析
         }
       }
     },
@@ -967,11 +923,9 @@ export function analyzeCode(code: string, filename: string = "code.js"): Analysi
   try {
     const codeIssues = performCodeLevelAnalysis(code);
     issues.push(...codeIssues);
-  } catch (e) {
-    console.error("Code level analysis error:", e);
+  } catch {
+    // 整码级分析失败不阻断结果返回
   }
-
-  console.log("Total issues found:", issues.length);
   
   const highSeverity = issues.filter(i => i.severity === "error").length;
   
