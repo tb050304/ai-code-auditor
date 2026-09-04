@@ -8,7 +8,6 @@ import { useAuditor } from "@/hooks/useAuditor";
 import { useASTAnalysis } from "@/hooks/useASTAnalysis";
 import { useConversations } from "@/hooks/useConversations";
 import { useProject } from "@/hooks/useProject";
-import { getDefaultBackend } from "@/lib/storage";
 import { DEFAULT_CODE } from "@/lib/defaultCode";
 import { createMessage, buildHistoryMessages } from "@/lib/messages";
 import type { Conversation } from "@/types";
@@ -95,7 +94,12 @@ export default function IDEPage() {
     selectProject,
     deleteProject,
     refreshProjects,
-    rootFiles,
+    fileTree,
+    writeFile,
+    mkdir,
+    deleteNode,
+    renameNode,
+    readFile,
   } = useProject();
 
   // 当前打开的文件路径（null 表示单文件模式，用 DEFAULT_CODE）
@@ -104,16 +108,87 @@ export default function IDEPage() {
   // 点击文件树中的文件，读取内容并加载到编辑器
   const handleFileClick = useCallback(
     async (path: string) => {
-      if (!activeProjectId) return;
       try {
-        const content = await getDefaultBackend().readFile(activeProjectId, path);
+        const content = await readFile(path);
         setCode(content);
         setActiveFilePath(path);
       } catch (e) {
         console.error("读取文件失败:", e);
       }
     },
-    [activeProjectId],
+    [readFile],
+  );
+
+  // 新建文件
+  const handleCreateFile = useCallback(
+    async (parentDir: string, name: string) => {
+      if (!name.trim()) return;
+      try {
+        const path = parentDir === "/" ? `/${name}` : `${parentDir}/${name}`;
+        await writeFile(path, "");
+        setActiveFilePath(path);
+        setCode("");
+      } catch (e) {
+        console.error("新建文件失败:", e);
+        alert(`新建文件失败: ${e}`);
+      }
+    },
+    [writeFile],
+  );
+
+  // 新建文件夹
+  const handleCreateDir = useCallback(
+    async (parentDir: string, name: string) => {
+      if (!name.trim()) return;
+      try {
+        const path = parentDir === "/" ? `/${name}` : `${parentDir}/${name}`;
+        await mkdir(path);
+      } catch (e) {
+        console.error("新建文件夹失败:", e);
+        alert(`新建文件夹失败: ${e}`);
+      }
+    },
+    [mkdir],
+  );
+
+  // 删除文件/文件夹
+  const handleDeleteNode = useCallback(
+    async (path: string, type: "file" | "directory") => {
+      const displayName = path.slice(1) || path;
+      if (!confirm(`确认删除 ${type === "directory" ? "文件夹" : "文件"} "${displayName}" 吗？`)) {
+        return;
+      }
+      try {
+        await deleteNode(path);
+        // 如果删除的是当前打开的文件，清空编辑器
+        if (activeFilePath === path || (type === "directory" && activeFilePath?.startsWith(path + "/"))) {
+          setActiveFilePath(null);
+          setCode(DEFAULT_CODE);
+        }
+      } catch (e) {
+        console.error("删除失败:", e);
+        alert(`删除失败: ${e}`);
+      }
+    },
+    [deleteNode, activeFilePath],
+  );
+
+  // 重命名文件/文件夹
+  const handleRenameNode = useCallback(
+    async (oldPath: string, newName: string) => {
+      if (!newName.trim()) return;
+      try {
+        const node = await renameNode(oldPath, newName);
+        // 如果重命名的是当前打开的文件，更新路径
+        if (activeFilePath === oldPath) {
+          setActiveFilePath(node.path);
+        }
+      } catch (e) {
+        console.error("重命名失败:", e);
+        alert(`重命名失败: ${e}`);
+      }
+    },
+    [renameNode, activeFilePath],
   );
 
   // 导入成功后刷新项目列表（新的项目 id 会由 useProject 自动选中）
@@ -270,11 +345,16 @@ export default function IDEPage() {
       <ProjectSidebar
         projects={projects}
         activeProjectId={activeProjectId}
-        rootFiles={rootFiles}
+        fileTree={fileTree}
+        activeFilePath={activeFilePath}
         onSelectProject={selectProject}
         onDeleteProject={deleteProject}
         onImported={handleImported}
         onFileClick={handleFileClick}
+        onCreateFile={handleCreateFile}
+        onCreateDir={handleCreateDir}
+        onDeleteNode={handleDeleteNode}
+        onRenameNode={handleRenameNode}
       />
 
       {/* 代码编辑器 */}
