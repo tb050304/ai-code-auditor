@@ -28,6 +28,8 @@ interface CodeEditorProps {
   onModelChange?: (modelId: string) => void;
   issues?: Issue[];
   onIssuesChange?: (issues: Issue[]) => void;
+  fileName?: string;
+  language?: string;
 }
 
 // 暴露给父组件的方法
@@ -44,6 +46,8 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     onModelChange,
     issues = [],
     onIssuesChange,
+    fileName,
+    language = "javascript",
   },
   ref
 ) {
@@ -184,10 +188,15 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       style={{ minWidth: 0 }}
     >
       <header className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex justify-between items-center shrink-0">
-        <div className="flex items-center gap-4">
-          <h1 className="text-sm font-bold text-cyan-400">AI Code Auditor</h1>
-          <span className="text-xs text-slate-500 bg-slate-800 px-2 py-1 rounded">
-            Language: JavaScript
+        <div className="flex items-center gap-4 min-w-0">
+          <h1 className="text-sm font-bold text-cyan-400 flex-shrink-0">AI Code Auditor</h1>
+          {fileName && (
+            <span className="text-xs text-slate-400 bg-slate-800 px-2 py-1 rounded truncate" title={fileName}>
+              📄 {fileName}
+            </span>
+          )}
+          <span className="text-xs text-slate-500 bg-slate-800 px-2 py-1 rounded flex-shrink-0">
+            {language}
           </span>
         </div>
         
@@ -211,7 +220,8 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
         <Editor
           height="100%"
           width="100%"
-          defaultLanguage="javascript"
+          defaultLanguage={language}
+          language={language}
           theme="vs-dark"
           value={value}
           onChange={onChange}

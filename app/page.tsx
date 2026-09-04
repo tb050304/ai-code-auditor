@@ -3,12 +3,61 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import CodeEditor, { CodeEditorHandle } from "@/components/editor/CodeEditor";
 import AgentConsole from "@/components/console/AgentConsole";
 import ConversationSidebar from "@/components/console/ConversationSidebar";
+import ProjectSidebar from "@/components/file-tree/ProjectSidebar";
 import { useAuditor } from "@/hooks/useAuditor";
 import { useASTAnalysis } from "@/hooks/useASTAnalysis";
 import { useConversations } from "@/hooks/useConversations";
+import { useProject } from "@/hooks/useProject";
+import { getDefaultBackend } from "@/lib/storage";
 import { DEFAULT_CODE } from "@/lib/defaultCode";
 import { createMessage, buildHistoryMessages } from "@/lib/messages";
 import type { Conversation } from "@/types";
+import type { ImportResult } from "@/lib/storage/import";
+import { extname } from "@/lib/storage/path";
+
+function inferMonacoLanguage(filePath: string): string {
+  const ext = extname(filePath).toLowerCase();
+  const map: Record<string, string> = {
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".json": "json",
+    ".css": "css",
+    ".scss": "scss",
+    ".less": "less",
+    ".html": "html",
+    ".htm": "html",
+    ".xml": "xml",
+    ".svg": "xml",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".py": "python",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".rb": "ruby",
+    ".php": "php",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".hpp": "cpp",
+    ".cs": "csharp",
+    ".swift": "swift",
+    ".sql": "sql",
+    ".vue": "html",
+    ".svelte": "html",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".zsh": "shell",
+  };
+  return map[ext] || "plaintext";
+}
 
 export default function IDEPage() {
   const [code, setCode] = useState<string>(DEFAULT_CODE);
@@ -38,6 +87,42 @@ export default function IDEPage() {
 
   // ---- AST 静态分析层（用于编辑器高亮） ----
   const { analysisResult, analyzeCode } = useASTAnalysis();
+
+  // ---- 项目与文件管理层 ----
+  const {
+    projects,
+    activeProjectId,
+    selectProject,
+    deleteProject,
+    refreshProjects,
+    rootFiles,
+  } = useProject();
+
+  // 当前打开的文件路径（null 表示单文件模式，用 DEFAULT_CODE）
+  const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+
+  // 点击文件树中的文件，读取内容并加载到编辑器
+  const handleFileClick = useCallback(
+    async (path: string) => {
+      if (!activeProjectId) return;
+      try {
+        const content = await getDefaultBackend().readFile(activeProjectId, path);
+        setCode(content);
+        setActiveFilePath(path);
+      } catch (e) {
+        console.error("读取文件失败:", e);
+      }
+    },
+    [activeProjectId],
+  );
+
+  // 导入成功后刷新项目列表（新的项目 id 会由 useProject 自动选中）
+  const handleImported = useCallback(
+    (_result: ImportResult) => {
+      refreshProjects();
+    },
+    [refreshProjects],
+  );
 
   // 拖拽分隔条相关
   const dragState = useRef({ isDragging: false, startX: 0, startWidth: 0 });
@@ -168,12 +253,31 @@ export default function IDEPage() {
     ? { totalIssues: analysisResult.totalIssues, highSeverity: analysisResult.highSeverity }
     : null;
 
+  // 根据文件扩展名推断 Monaco 语言
+  const editorLanguage = activeFilePath
+    ? inferMonacoLanguage(activeFilePath)
+    : "javascript";
+
+  // 编辑器显示的文件名（去掉开头的 /）
+  const editorFileName = activeFilePath ? activeFilePath.slice(1) : undefined;
+
   return (
     <main
       ref={containerRef}
       className="flex h-screen w-full overflow-hidden bg-slate-950 text-slate-300"
     >
-      {/* 代码编辑器（左侧留空，预留为将来的本地项目 / 文件选择区） */}
+      {/* 左侧项目侧边栏 */}
+      <ProjectSidebar
+        projects={projects}
+        activeProjectId={activeProjectId}
+        rootFiles={rootFiles}
+        onSelectProject={selectProject}
+        onDeleteProject={deleteProject}
+        onImported={handleImported}
+        onFileClick={handleFileClick}
+      />
+
+      {/* 代码编辑器 */}
       <CodeEditor
         ref={editorRef}
         value={code}
@@ -182,6 +286,8 @@ export default function IDEPage() {
         selectedModel={selectedModel}
         onModelChange={setSelectedModel}
         issues={analysisResult?.success ? analysisResult.issues : []}
+        fileName={editorFileName}
+        language={editorLanguage}
       />
 
       {/* 右侧：会话历史面板（由 AgentConsole 头部图标控制展开 / 收起） */}

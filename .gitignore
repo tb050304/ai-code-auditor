@@ -42,3 +42,6 @@ next-env.d.ts
 
 # roadmap / dev docs
 .roadmap/
+
+# local claude skills (personal workflow)
+.claude/skills/
