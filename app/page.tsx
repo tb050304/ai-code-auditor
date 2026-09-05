@@ -8,64 +8,19 @@ import { useAuditor } from "@/hooks/useAuditor";
 import { useASTAnalysis } from "@/hooks/useASTAnalysis";
 import { useConversations } from "@/hooks/useConversations";
 import { useProject } from "@/hooks/useProject";
+import { useEditorTabs } from "@/hooks/useEditorTabs";
 import { DEFAULT_CODE } from "@/lib/defaultCode";
 import { createMessage, buildHistoryMessages } from "@/lib/messages";
 import type { Conversation } from "@/types";
 import type { ImportResult } from "@/lib/storage/import";
-import { extname } from "@/lib/storage/path";
-
-function inferMonacoLanguage(filePath: string): string {
-  const ext = extname(filePath).toLowerCase();
-  const map: Record<string, string> = {
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-    ".json": "json",
-    ".css": "css",
-    ".scss": "scss",
-    ".less": "less",
-    ".html": "html",
-    ".htm": "html",
-    ".xml": "xml",
-    ".svg": "xml",
-    ".md": "markdown",
-    ".markdown": "markdown",
-    ".yaml": "yaml",
-    ".yml": "yaml",
-    ".py": "python",
-    ".go": "go",
-    ".rs": "rust",
-    ".java": "java",
-    ".kt": "kotlin",
-    ".rb": "ruby",
-    ".php": "php",
-    ".c": "c",
-    ".h": "c",
-    ".cpp": "cpp",
-    ".hpp": "cpp",
-    ".cs": "csharp",
-    ".swift": "swift",
-    ".sql": "sql",
-    ".vue": "html",
-    ".svelte": "html",
-    ".sh": "shell",
-    ".bash": "shell",
-    ".zsh": "shell",
-  };
-  return map[ext] || "plaintext";
-}
 
 export default function IDEPage() {
-  const [code, setCode] = useState<string>(DEFAULT_CODE);
   const [userPrompt, setUserPrompt] = useState<string>("");
   const [consoleWidth, setConsoleWidth] = useState(450);
-  // 右侧会话历史面板是否展开（点击 AgentConsole 头部图标切换）
+  // 右侧会话历史面板是否展开
   const [showConversationPanel, setShowConversationPanel] = useState(false);
 
-  // ---- 会话层：历史对话、切换、持久化 ----
+  // ---- 会话层 ----
   const {
     conversations,
     activeConversation,
@@ -84,7 +39,7 @@ export default function IDEPage() {
   const { isAuditing, models, selectedModel, setSelectedModel, startAudit, stopAudit } =
     useAuditor();
 
-  // ---- AST 静态分析层（用于编辑器高亮） ----
+  // ---- AST 静态分析层 ----
   const { analysisResult, analyzeCode } = useASTAnalysis();
 
   // ---- 项目与文件管理层 ----
@@ -102,21 +57,58 @@ export default function IDEPage() {
     readFile,
   } = useProject();
 
-  // 当前打开的文件路径（null 表示单文件模式，用 DEFAULT_CODE）
-  const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+  // ---- 多 Tab 编辑器 ----
+  const {
+    tabs,
+    activeTabPath,
+    activeTab,
+    openTab,
+    closeTab,
+    activateTab,
+    updateActiveContent,
+    saveActiveTab,
+    isDirty,
+    closeOtherTabs,
+    closeAllTabs,
+    renameTab,
+    removeTab,
+  } = useEditorTabs();
 
-  // 点击文件树中的文件，读取内容并加载到编辑器
+  // 当前编辑器内容：有激活 Tab 时用 Tab 的内容，否则用单文件模式的 code
+  const [standaloneCode, setStandaloneCode] = useState<string>(DEFAULT_CODE);
+  const editorCode = activeTab ? activeTab.content : standaloneCode;
+
+  // 点击文件树中的文件 → 在 Tab 中打开
   const handleFileClick = useCallback(
     async (path: string) => {
+      // 如果已经打开，直接激活
+      const existing = tabs.find((t) => t.path === path);
+      if (existing) {
+        activateTab(path);
+        return;
+      }
       try {
         const content = await readFile(path);
-        setCode(content);
-        setActiveFilePath(path);
+        openTab(path, content);
       } catch (e) {
         console.error("读取文件失败:", e);
+        alert(`读取文件失败: ${e}`);
       }
     },
-    [readFile],
+    [readFile, openTab, activateTab, tabs],
+  );
+
+  // 编辑器内容变化回调
+  const handleEditorChange = useCallback(
+    (val: string | undefined) => {
+      if (val === undefined) return;
+      if (activeTabPath) {
+        updateActiveContent(val);
+      } else {
+        setStandaloneCode(val);
+      }
+    },
+    [activeTabPath, updateActiveContent],
   );
 
   // 新建文件
@@ -126,14 +118,13 @@ export default function IDEPage() {
       try {
         const path = parentDir === "/" ? `/${name}` : `${parentDir}/${name}`;
         await writeFile(path, "");
-        setActiveFilePath(path);
-        setCode("");
+        openTab(path, "");
       } catch (e) {
         console.error("新建文件失败:", e);
         alert(`新建文件失败: ${e}`);
       }
     },
-    [writeFile],
+    [writeFile, openTab],
   );
 
   // 新建文件夹
@@ -160,17 +151,20 @@ export default function IDEPage() {
       }
       try {
         await deleteNode(path);
-        // 如果删除的是当前打开的文件，清空编辑器
-        if (activeFilePath === path || (type === "directory" && activeFilePath?.startsWith(path + "/"))) {
-          setActiveFilePath(null);
-          setCode(DEFAULT_CODE);
+        // 从 Tab 中移除（不提示，文件都没了）
+        if (type === "file") {
+          removeTab(path);
+        } else {
+          // 目录：移除所有子路径的 tab
+          const toRemove = tabs.filter((t) => t.path.startsWith(path + "/"));
+          for (const t of toRemove) removeTab(t.path);
         }
       } catch (e) {
         console.error("删除失败:", e);
         alert(`删除失败: ${e}`);
       }
     },
-    [deleteNode, activeFilePath],
+    [deleteNode, removeTab, tabs],
   );
 
   // 重命名文件/文件夹
@@ -179,19 +173,38 @@ export default function IDEPage() {
       if (!newName.trim()) return;
       try {
         const node = await renameNode(oldPath, newName);
-        // 如果重命名的是当前打开的文件，更新路径
-        if (activeFilePath === oldPath) {
-          setActiveFilePath(node.path);
+        // 如果是文件，更新对应的 tab
+        if (node.type === "file") {
+          renameTab(oldPath, node.path);
+        } else {
+          // 目录：更新所有子路径的 tab
+          const affected = tabs.filter((t) => t.path.startsWith(oldPath + "/"));
+          for (const t of affected) {
+            const newPath = node.path + t.path.slice(oldPath.length);
+            renameTab(t.path, newPath);
+          }
         }
       } catch (e) {
         console.error("重命名失败:", e);
         alert(`重命名失败: ${e}`);
       }
     },
-    [renameNode, activeFilePath],
+    [renameNode, renameTab, tabs],
   );
 
-  // 导入成功后刷新项目列表（新的项目 id 会由 useProject 自动选中）
+  // Tab 保存（右键菜单触发）
+  const handleSaveTab = useCallback(
+    (path: string) => {
+      const tab = tabs.find((t) => t.path === path);
+      if (!tab) return;
+      saveActiveTab(async (p, c) => {
+        await writeFile(p, c);
+      });
+    },
+    [tabs, saveActiveTab, writeFile],
+  );
+
+  // 导入成功后刷新
   const handleImported = useCallback(
     (_result: ImportResult) => {
       refreshProjects();
@@ -199,33 +212,32 @@ export default function IDEPage() {
     [refreshProjects],
   );
 
-  // 拖拽分隔条相关
+  // 拖拽分隔条
   const dragState = useRef({ isDragging: false, startX: 0, startWidth: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<CodeEditorHandle | null>(null);
 
-  // 只在初始水合后恢复一次编辑器代码，避免覆盖用户输入
+  // 初始水合后恢复一次编辑器代码（单文件模式）
   const didInitialRestore = useRef(false);
   useEffect(() => {
     if (isHydrated && !didInitialRestore.current) {
       didInitialRestore.current = true;
-      // 读取到外部恢复的数据后，延迟到微任务写回编辑器，满足 react-hooks/set-state-in-effect 校验
       const conversation = activeConversation;
       queueMicrotask(() => {
         const lastUser = conversation
           ? [...conversation.messages].reverse().find((m) => m.role === "user" && m.code)
           : undefined;
-        if (lastUser?.code) setCode(lastUser.code);
+        if (lastUser?.code) setStandaloneCode(lastUser.code);
       });
     }
   }, [isHydrated, activeConversation]);
 
-  // 把某个会话的最新用户代码恢复到编辑器
+  // 把某个会话的最新用户代码恢复到编辑器（单文件模式）
   const restoreToEditor = useCallback((conv: Conversation | null) => {
     const lastUser = conv
       ? [...conv.messages].reverse().find((m) => m.role === "user" && m.code)
       : undefined;
-    setCode(lastUser?.code ?? DEFAULT_CODE);
+    setStandaloneCode(lastUser?.code ?? DEFAULT_CODE);
   }, []);
 
   const handleCreateConversation = useCallback(() => {
@@ -245,7 +257,6 @@ export default function IDEPage() {
   const handleDeleteConversation = useCallback(
     (id: string) => {
       deleteConversation(id);
-      // 删除后回退到列表中最新的会话，并恢复其代码
       const remaining = conversations.filter((c) => c.id !== id);
       restoreToEditor(remaining.length ? remaining[remaining.length - 1] : null);
     },
@@ -282,35 +293,35 @@ export default function IDEPage() {
     document.body.style.userSelect = "none";
   };
 
-  // ---------------- 运行审计：AST 分析 + 写入会话 + 流式 AI ----------------
+  // ---------------- 运行审计 ----------------
   const handleRunAudit = async () => {
+    const code = editorCode;
     if (!code.trim() || isAuditing) return;
 
-    // 无当前会话时自动创建（标题由代码/追问自动生成）
     let conv = activeConversation;
     if (!conv) {
       conv = createConversation(code, userPrompt);
     }
     const convId = conv.id;
 
-    // 1) 先跑 AST 静态分析，更新编辑器高亮
+    // 1) AST 静态分析
     await analyzeCode(code);
 
-    // 2) 追加本轮用户消息并记录代码快照
+    // 2) 追加用户消息 + 代码快照
     const userMessage = addUserMessage(convId, {
       code,
       userPrompt,
       modelId: selectedModel || undefined,
     });
 
-    // 3) 构造多轮上下文（当前回合之前的所有已完成消息）
+    // 3) 构造多轮上下文
     const history = buildHistoryMessages(conv, userMessage.id);
 
-    // 4) 追加 assistant 占位消息，随后由流式回调逐步填充
+    // 4) 追加 assistant 占位
     const assistantMessage = createMessage("assistant", { status: "running", content: "" });
     appendMessage(convId, assistantMessage);
 
-    // 5) 启动流式审计，增量内容实时写回对应 assistant 消息
+    // 5) 流式审计
     startAudit({
       code,
       userPrompt,
@@ -322,19 +333,29 @@ export default function IDEPage() {
     });
   };
 
-  // AST 摘要（紧凑一行，展示在控制台顶部）
-  // AST 摘要：分析成功后始终显示（含 0 问题），给用户明确的反饋
+  // 快捷键：Ctrl+S 保存当前 Tab
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        if (activeTabPath && isDirty(activeTabPath)) {
+          saveActiveTab(async (p, c) => {
+            await writeFile(p, c);
+          });
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [activeTabPath, isDirty, saveActiveTab, writeFile]);
+
+  // AST 摘要
   const astSummary = analysisResult?.success
     ? { totalIssues: analysisResult.totalIssues, highSeverity: analysisResult.highSeverity }
     : null;
 
-  // 根据文件扩展名推断 Monaco 语言
-  const editorLanguage = activeFilePath
-    ? inferMonacoLanguage(activeFilePath)
-    : "javascript";
-
-  // 编辑器显示的文件名（去掉开头的 /）
-  const editorFileName = activeFilePath ? activeFilePath.slice(1) : undefined;
+  const editorLanguage = activeTab ? activeTab.language : "javascript";
+  const editorFileName = activeTab ? activeTab.path.slice(1) : undefined;
 
   return (
     <main
@@ -346,7 +367,7 @@ export default function IDEPage() {
         projects={projects}
         activeProjectId={activeProjectId}
         fileTree={fileTree}
-        activeFilePath={activeFilePath}
+        activeFilePath={activeTabPath}
         onSelectProject={selectProject}
         onDeleteProject={deleteProject}
         onImported={handleImported}
@@ -357,20 +378,27 @@ export default function IDEPage() {
         onRenameNode={handleRenameNode}
       />
 
-      {/* 代码编辑器 */}
+      {/* 代码编辑器（多 Tab 模式） */}
       <CodeEditor
         ref={editorRef}
-        value={code}
-        onChange={(val) => val !== undefined && setCode(val)}
+        value={editorCode}
+        onChange={handleEditorChange}
         models={models}
         selectedModel={selectedModel}
         onModelChange={setSelectedModel}
         issues={analysisResult?.success ? analysisResult.issues : []}
         fileName={editorFileName}
         language={editorLanguage}
+        tabs={tabs}
+        activeTabPath={activeTabPath}
+        onActivateTab={activateTab}
+        onCloseTab={closeTab}
+        onCloseOtherTabs={closeOtherTabs}
+        onCloseAllTabs={closeAllTabs}
+        onSaveTab={handleSaveTab}
       />
 
-      {/* 右侧：会话历史面板（由 AgentConsole 头部图标控制展开 / 收起） */}
+      {/* 右侧：会话历史面板 */}
       {showConversationPanel && (
         <ConversationSidebar
           conversations={conversations}

@@ -1,6 +1,8 @@
 "use client";
 import React, { useRef, useEffect, forwardRef, useImperativeHandle } from "react";
 import Editor, { Monaco, OnMount } from "@monaco-editor/react";
+import TabBar from "./TabBar";
+import type { EditorTab } from "@/hooks/useEditorTabs";
 
 interface ModelInfo {
   id: string;
@@ -30,6 +32,15 @@ interface CodeEditorProps {
   onIssuesChange?: (issues: Issue[]) => void;
   fileName?: string;
   language?: string;
+  // ---- 多 Tab 相关 ----
+  tabs?: EditorTab[];
+  activeTabPath?: string | null;
+  onActivateTab?: (path: string) => void;
+  onCloseTab?: (path: string) => void;
+  onCloseOtherTabs?: (path: string) => void;
+  onCloseAllTabs?: () => void;
+  onSaveTab?: (path: string) => void;
+  onRunAudit?: () => void;
 }
 
 // 暴露给父组件的方法
@@ -48,6 +59,13 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     onIssuesChange,
     fileName,
     language = "javascript",
+    tabs = [],
+    activeTabPath,
+    onActivateTab,
+    onCloseTab,
+    onCloseOtherTabs,
+    onCloseAllTabs,
+    onSaveTab,
   },
   ref
 ) {
@@ -173,6 +191,20 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
         margin-left: 3px;
         border-radius: 2px;
       }
+      /* Tab 栏滚动条样式 */
+      .scrollbar-thin::-webkit-scrollbar {
+        height: 4px;
+      }
+      .scrollbar-thin::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .scrollbar-thin::-webkit-scrollbar-thumb {
+        background: #475569;
+        border-radius: 2px;
+      }
+      .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+        background: #64748b;
+      }
     `;
     document.head.appendChild(style);
 
@@ -182,24 +214,28 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     }
   };
 
+  const showTabs = tabs.length > 0;
+
   return (
-    <section 
+    <section
       className="flex-1 flex flex-col border-r border-slate-800 min-w-0"
       style={{ minWidth: 0 }}
     >
       <header className="px-4 py-3 bg-slate-900 border-b border-slate-800 flex justify-between items-center shrink-0">
         <div className="flex items-center gap-4 min-w-0">
           <h1 className="text-sm font-bold text-cyan-400 flex-shrink-0">AI Code Auditor</h1>
-          {fileName && (
+          {!showTabs && fileName && (
             <span className="text-xs text-slate-400 bg-slate-800 px-2 py-1 rounded truncate" title={fileName}>
               📄 {fileName}
             </span>
           )}
-          <span className="text-xs text-slate-500 bg-slate-800 px-2 py-1 rounded flex-shrink-0">
-            {language}
-          </span>
+          {!showTabs && (
+            <span className="text-xs text-slate-500 bg-slate-800 px-2 py-1 rounded flex-shrink-0">
+              {language}
+            </span>
+          )}
         </div>
-        
+
         {models.length > 0 && onModelChange && (
           <select
             value={selectedModel}
@@ -215,9 +251,23 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
         )}
       </header>
 
+      {/* 多 Tab 模式下的 Tab 栏 */}
+      {showTabs && onActivateTab && onCloseTab && onCloseOtherTabs && onCloseAllTabs && (
+        <TabBar
+          tabs={tabs}
+          activeTabPath={activeTabPath ?? null}
+          onActivate={onActivateTab}
+          onClose={onCloseTab}
+          onCloseOthers={onCloseOtherTabs}
+          onCloseAll={onCloseAllTabs}
+          onSave={onSaveTab}
+        />
+      )}
+
       {/* min-h-0 是关键：让该 flex 子项可收缩到实际可用高度，否则会被 Monaco 内容高度撑开，产生多余的空白区可滚动 */}
       <div className="flex-1 min-w-0 min-h-0 overflow-hidden">
         <Editor
+          key={activeTabPath ?? "default"}
           height="100%"
           width="100%"
           defaultLanguage={language}
@@ -231,7 +281,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
             fontSize: 14,
             wordWrap: "on",
             automaticLayout: true,
-            glyphMargin: true, // 启用字形边距用于显示标记
+            glyphMargin: true,
             folding: true,
             lineNumbers: "on",
             renderLineHighlight: "all",
