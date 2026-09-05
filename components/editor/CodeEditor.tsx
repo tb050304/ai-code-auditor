@@ -2,7 +2,9 @@
 import React, { useRef, useEffect, forwardRef, useImperativeHandle } from "react";
 import Editor, { Monaco, OnMount } from "@monaco-editor/react";
 import TabBar from "./TabBar";
+import AnalysisProgress from "./AnalysisProgress";
 import type { EditorTab } from "@/hooks/useEditorTabs";
+import type { BatchProgress, BatchAnalysisResult } from "@/lib/ast/batch-types";
 
 interface ModelInfo {
   id: string;
@@ -41,6 +43,13 @@ interface CodeEditorProps {
   onCloseAllTabs?: () => void;
   onSaveTab?: (path: string) => void;
   onRunAudit?: () => void;
+  // ---- 批量分析进度 ----
+  batchAnalyzing?: boolean;
+  batchProgress?: BatchProgress | null;
+  batchResult?: BatchAnalysisResult | null;
+  batchError?: string | null;
+  onCancelBatchAnalysis?: () => void;
+  onReanalyze?: () => void;
 }
 
 // 暴露给父组件的方法
@@ -66,6 +75,12 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     onCloseOtherTabs,
     onCloseAllTabs,
     onSaveTab,
+    batchAnalyzing = false,
+    batchProgress = null,
+    batchResult = null,
+    batchError = null,
+    onCancelBatchAnalysis,
+    onReanalyze,
   },
   ref
 ) {
@@ -265,7 +280,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
       )}
 
       {/* min-h-0 是关键：让该 flex 子项可收缩到实际可用高度，否则会被 Monaco 内容高度撑开，产生多余的空白区可滚动 */}
-      <div className="flex-1 min-w-0 min-h-0 overflow-hidden">
+      <div className="flex-1 min-w-0 min-h-0 overflow-hidden relative">
         <Editor
           key={activeTabPath ?? "default"}
           height="100%"
@@ -288,6 +303,18 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
           }}
         />
       </div>
+
+      {/* 批量分析进度条 */}
+      {(batchAnalyzing || batchResult || batchError) && (
+        <AnalysisProgress
+          isAnalyzing={batchAnalyzing}
+          progress={batchProgress}
+          result={batchResult}
+          error={batchError}
+          onCancel={onCancelBatchAnalysis}
+          onReanalyze={onReanalyze}
+        />
+      )}
     </section>
   );
 });
