@@ -9,7 +9,9 @@ import { useASTAnalysis } from "@/hooks/useASTAnalysis";
 import { useConversations } from "@/hooks/useConversations";
 import { useProject } from "@/hooks/useProject";
 import { useEditorTabs } from "@/hooks/useEditorTabs";
+import { useBatchAnalysis } from "@/hooks/useBatchAnalysis";
 import { DEFAULT_CODE } from "@/lib/defaultCode";
+import { isAnalyzableFile } from "@/lib/ast/batch-types";
 import { createMessage, buildHistoryMessages } from "@/lib/messages";
 import type { Conversation } from "@/types";
 import type { ImportResult } from "@/lib/storage/import";
@@ -73,6 +75,18 @@ export default function IDEPage() {
     renameTab,
     removeTab,
   } = useEditorTabs();
+
+  // ---- 批量 AST 分析 ----
+  const {
+    isAnalyzing: batchAnalyzing,
+    progress: batchProgress,
+    result: batchResult,
+    error: batchError,
+    fileResults,
+    startAnalysis: startBatchAnalysis,
+    cancelAnalysis: cancelBatchAnalysis,
+    getFileIssues,
+  } = useBatchAnalysis();
 
   // 当前编辑器内容：有激活 Tab 时用 Tab 的内容，否则用单文件模式的 code
   const [standaloneCode, setStandaloneCode] = useState<string>(DEFAULT_CODE);
@@ -204,13 +218,83 @@ export default function IDEPage() {
     [tabs, saveActiveTab, writeFile],
   );
 
-  // 导入成功后刷新
+  // 导入成功后刷新 + 重新批量分析
   const handleImported = useCallback(
     (_result: ImportResult) => {
       refreshProjects();
     },
     [refreshProjects],
   );
+
+  // 切换项目后自动触发批量分析
+  const runIdRef = useRef(0);
+  useEffect(() => {
+    if (!activeProjectId || !fileTree) return;
+
+    const runId = ++runIdRef.current;
+
+    (async () => {
+      // 收集所有可分析文件的内容
+      const analyzable: Array<{ path: string; content: string }> = [];
+
+      const walk = (node: typeof fileTree): void => {
+        if (!node) return;
+        if (node.type === "file" && isAnalyzableFile(node.path)) {
+          analyzable.push({ path: node.path, content: "" });
+        }
+        if (node.type === "directory" && node.children) {
+          for (const child of node.children) walk(child as any);
+        }
+      };
+      walk(fileTree);
+
+      if (analyzable.length === 0) return;
+
+      // 批量读取内容（用 Promise.all 并发读）
+      const tasks = await Promise.all(
+        analyzable.map(async (f) => ({
+          path: f.path,
+          content: await readFile(f.path),
+        })),
+      );
+
+      if (runId !== runIdRef.current) return;
+
+      startBatchAnalysis(tasks);
+    })();
+
+    return () => {
+      runIdRef.current++;
+    };
+  }, [activeProjectId, fileTree?.path, readFile, startBatchAnalysis]);
+
+  // 手动重新分析当前项目
+  const handleReanalyze = useCallback(() => {
+    if (!activeProjectId || !fileTree) return;
+
+    (async () => {
+      const analyzable: Array<{ path: string; content: string }> = [];
+      const walk = (node: any): void => {
+        if (!node) return;
+        if (node.type === "file" && isAnalyzableFile(node.path)) {
+          analyzable.push({ path: node.path, content: "" });
+        }
+        if (node.children) {
+          for (const child of node.children) walk(child);
+        }
+      };
+      walk(fileTree);
+
+      const tasks = await Promise.all(
+        analyzable.map(async (f) => ({
+          path: f.path,
+          content: await readFile(f.path),
+        })),
+      );
+
+      startBatchAnalysis(tasks);
+    })();
+  }, [activeProjectId, fileTree, readFile, startBatchAnalysis]);
 
   // 拖拽分隔条
   const dragState = useRef({ isDragging: false, startX: 0, startWidth: 0 });
@@ -386,7 +470,13 @@ export default function IDEPage() {
         models={models}
         selectedModel={selectedModel}
         onModelChange={setSelectedModel}
-        issues={analysisResult?.success ? analysisResult.issues : []}
+        issues={
+          activeTabPath && fileResults.has(activeTabPath)
+            ? getFileIssues(activeTabPath)
+            : analysisResult?.success
+              ? analysisResult.issues
+              : []
+        }
         fileName={editorFileName}
         language={editorLanguage}
         tabs={tabs}
@@ -396,6 +486,12 @@ export default function IDEPage() {
         onCloseOtherTabs={closeOtherTabs}
         onCloseAllTabs={closeAllTabs}
         onSaveTab={handleSaveTab}
+        batchAnalyzing={batchAnalyzing}
+        batchProgress={batchProgress}
+        batchResult={batchResult}
+        batchError={batchError}
+        onCancelBatchAnalysis={cancelBatchAnalysis}
+        onReanalyze={handleReanalyze}
       />
 
       {/* 右侧：会话历史面板 */}
