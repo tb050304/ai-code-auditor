@@ -1,10 +1,12 @@
 "use client";
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import ContextMenu from "./ContextMenu";
 import type { ContextMenuItem } from "./ContextMenu";
 import type { TreeNode } from "@/lib/storage/file-tree";
 import { getFileCategory, FILE_CATEGORY_COLORS, FILE_CATEGORY_ICONS } from "@/lib/storage/file-tree";
 import { basename, dirname, joinPath } from "@/lib/storage/path";
+import { buildTreeIssueMap, type NodeIssueSummary } from "@/lib/ast/issue-aggregate";
+import type { FileAnalysisResult } from "@/lib/ast/batch-types";
 
 export interface FileTreeActions {
   onFileClick?: (path: string) => void;
@@ -21,6 +23,8 @@ interface FileTreeProps extends FileTreeActions {
   activeFilePath?: string | null;
   /** 初始自动展开的路径集合 */
   defaultExpanded?: Set<string>;
+  /** 批量分析结果（用于显示问题指示器） */
+  fileResults?: Map<string, FileAnalysisResult>;
 }
 
 interface EditingState {
@@ -39,10 +43,17 @@ export default function FileTree({
   onDelete,
   onRename,
   onLoadChildren,
+  fileResults,
 }: FileTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(
     defaultExpanded ?? new Set(["/"]),
   );
+
+  // 构建文件树问题摘要 Map（文件 + 目录聚合）
+  const issueMap = useMemo<Map<string, NodeIssueSummary>>(() => {
+    if (!fileResults || fileResults.size === 0) return new Map();
+    return buildTreeIssueMap(root, fileResults);
+  }, [root, fileResults]);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -191,6 +202,7 @@ export default function FileTree({
         expanded={expanded}
         activeFilePath={activeFilePath}
         editing={editing}
+        issueMap={issueMap}
         onToggleExpand={toggleExpand}
         onFileClick={onFileClick}
         onContextMenu={handleContextMenu}
@@ -219,6 +231,7 @@ interface TreeNodeRowProps {
   expanded: Set<string>;
   activeFilePath?: string | null;
   editing: EditingState | null;
+  issueMap: Map<string, NodeIssueSummary>;
   onToggleExpand: (path: string) => void;
   onFileClick?: (path: string) => void;
   onContextMenu: (e: React.MouseEvent, path: string, type: "file" | "directory") => void;
@@ -234,6 +247,7 @@ function TreeNodeRow({
   expanded,
   activeFilePath,
   editing,
+  issueMap,
   onToggleExpand,
   onFileClick,
   onContextMenu,
@@ -263,6 +277,7 @@ function TreeNodeRow({
             expanded={expanded}
             activeFilePath={activeFilePath}
             editing={editing}
+            issueMap={issueMap}
             onToggleExpand={onToggleExpand}
             onFileClick={onFileClick}
             onContextMenu={onContextMenu}
@@ -290,6 +305,8 @@ function TreeNodeRow({
   const category = isDir ? null : getFileCategory(node.path);
   const colorClass = isDir ? "text-slate-300" : FILE_CATEGORY_COLORS[category!];
   const iconText = isDir ? (isOpen ? "▾" : "▸") : FILE_CATEGORY_ICONS[category!];
+  const issueSummary = issueMap.get(node.path);
+  const hasIssue = issueSummary && issueSummary.level !== "none";
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -348,6 +365,21 @@ function TreeNodeRow({
         ) : (
           <span className="truncate flex-1 min-w-0">{node.name}</span>
         )}
+        {hasIssue && issueSummary && (
+          <span
+            className={`
+              flex-shrink-0 ml-1 mr-1 px-1.5 py-0.5 rounded text-[10px] font-medium min-w-[18px] text-center
+              ${issueSummary.level === "error"
+                ? "bg-red-500/20 text-red-400"
+                : issueSummary.level === "warning"
+                  ? "bg-yellow-500/20 text-yellow-400"
+                  : "bg-blue-500/20 text-blue-400"}
+            `}
+            title={`${issueSummary.errorCount} error, ${issueSummary.warningCount} warning, ${issueSummary.infoCount} info`}
+          >
+            {issueSummary.total}
+          </span>
+        )}
       </div>
       {isDir && isOpen && node.children && (
         <>
@@ -359,6 +391,7 @@ function TreeNodeRow({
               expanded={expanded}
               activeFilePath={activeFilePath}
               editing={editing}
+              issueMap={issueMap}
               onToggleExpand={onToggleExpand}
               onFileClick={onFileClick}
               onContextMenu={onContextMenu}

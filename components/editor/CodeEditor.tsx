@@ -1,10 +1,11 @@
 "use client";
-import React, { useRef, useEffect, forwardRef, useImperativeHandle } from "react";
+import React, { useRef, useEffect, forwardRef, useImperativeHandle, useState } from "react";
 import Editor, { Monaco, OnMount } from "@monaco-editor/react";
 import TabBar from "./TabBar";
 import AnalysisProgress from "./AnalysisProgress";
+import IssuesPanel from "./IssuesPanel";
 import type { EditorTab } from "@/hooks/useEditorTabs";
-import type { BatchProgress, BatchAnalysisResult } from "@/lib/ast/batch-types";
+import type { BatchProgress, BatchAnalysisResult, FileAnalysisResult } from "@/lib/ast/batch-types";
 
 interface ModelInfo {
   id: string;
@@ -50,6 +51,9 @@ interface CodeEditorProps {
   batchError?: string | null;
   onCancelBatchAnalysis?: () => void;
   onReanalyze?: () => void;
+  // ---- 问题面板 ----
+  fileResults?: Map<string, FileAnalysisResult>;
+  onIssueClick?: (path: string, line: number) => void;
 }
 
 // 暴露给父组件的方法
@@ -81,12 +85,15 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     batchError = null,
     onCancelBatchAnalysis,
     onReanalyze,
+    fileResults,
+    onIssueClick,
   },
   ref
 ) {
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const decorationsRef = useRef<string[]>([]);
+  const [showIssuesPanel, setShowIssuesPanel] = useState(true);
 
   // 暴露 scrollToLine 方法给父组件
   useImperativeHandle(ref, () => ({
@@ -304,17 +311,53 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
         />
       </div>
 
-      {/* 批量分析进度条 */}
-      {(batchAnalyzing || batchResult || batchError) && (
-        <AnalysisProgress
-          isAnalyzing={batchAnalyzing}
-          progress={batchProgress}
-          result={batchResult}
-          error={batchError}
-          onCancel={onCancelBatchAnalysis}
-          onReanalyze={onReanalyze}
-        />
-      )}
+      {/* 底部：分析相关区域 */}
+      <div className="shrink-0 border-t border-slate-800 bg-slate-900 flex flex-col">
+        {/* 批量分析进度条 */}
+        {(batchAnalyzing || batchResult || batchError) && (
+          <AnalysisProgress
+            isAnalyzing={batchAnalyzing}
+            progress={batchProgress}
+            result={batchResult}
+            error={batchError}
+            onCancel={onCancelBatchAnalysis}
+            onReanalyze={onReanalyze}
+          />
+        )}
+
+        {/* 问题面板切换条 */}
+        {fileResults && fileResults.size > 0 && (
+          <>
+            <div
+              className="flex items-center justify-between px-3 py-1.5 text-xs cursor-pointer hover:bg-slate-800/40 border-t border-slate-800"
+              onClick={() => setShowIssuesPanel((v) => !v)}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-slate-500">{showIssuesPanel ? "▾" : "▸"}</span>
+                <span className="text-slate-300 font-medium">问题面板</span>
+                {batchResult && (
+                  <span className="text-slate-500">
+                    {batchResult.totalIssues} 个问题
+                    {batchResult.highSeverity > 0 && (
+                      <span className="text-red-400 ml-1">
+                        · {batchResult.highSeverity} 高危</span>
+                    )}
+                  </span>
+                )}
+              </div>
+            </div>
+            {showIssuesPanel && (
+              <div className="h-56 border-t border-slate-800">
+                <IssuesPanel
+              fileResults={fileResults}
+              onIssueClick={onIssueClick}
+              activeFilePath={activeTabPath ?? null}
+            />
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </section>
   );
 });
