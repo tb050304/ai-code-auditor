@@ -5,6 +5,7 @@ import FileTree from "@/components/file-tree/FileTree";
 import type { Project, FileNode } from "@/lib/storage";
 import type { TreeNode } from "@/lib/storage/file-tree";
 import type { ImportResult } from "@/lib/storage/import";
+import type { FileAnalysisResult } from "@/lib/ast/batch-types";
 import { joinPath } from "@/lib/storage/path";
 
 interface ProjectSidebarProps {
@@ -12,6 +13,7 @@ interface ProjectSidebarProps {
   activeProjectId: string | null;
   fileTree: TreeNode | null;
   activeFilePath: string | null;
+  fileResults?: Map<string, FileAnalysisResult>;
   onSelectProject: (id: string) => void;
   onDeleteProject: (id: string) => void;
   onImported: (result: ImportResult) => void;
@@ -27,6 +29,7 @@ export default function ProjectSidebar({
   activeProjectId,
   fileTree,
   activeFilePath,
+  fileResults,
   onSelectProject,
   onDeleteProject,
   onImported,
@@ -131,6 +134,7 @@ export default function ProjectSidebar({
               <FileTree
                 root={fileTree}
                 activeFilePath={activeFilePath}
+                fileResults={fileResults}
                 onFileClick={onFileClick}
                 onCreateFile={onCreateFile}
                 onCreateDir={onCreateDir}

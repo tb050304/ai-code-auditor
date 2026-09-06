@@ -112,6 +112,30 @@ export default function IDEPage() {
     [readFile, openTab, activateTab, tabs],
   );
 
+  // 点击问题面板中的问题 → 打开文件并滚动到指定行
+  const handleIssueClick = useCallback(
+    async (path: string, line: number) => {
+      // 打开/激活对应 Tab
+      const existing = tabs.find((t) => t.path === path);
+      if (existing) {
+        activateTab(path);
+      } else {
+        try {
+          const content = await readFile(path);
+          openTab(path, content);
+        } catch (e) {
+          console.error("读取文件失败:", e);
+          return;
+        }
+      }
+      // 滚动到指定行（等一帧让编辑器挂载/切换完成）
+      requestAnimationFrame(() => {
+        editorRef.current?.scrollToLine(line);
+      });
+    },
+    [tabs, activateTab, readFile, openTab],
+  );
+
   // 编辑器内容变化回调
   const handleEditorChange = useCallback(
     (val: string | undefined) => {
@@ -452,6 +476,7 @@ export default function IDEPage() {
         activeProjectId={activeProjectId}
         fileTree={fileTree}
         activeFilePath={activeTabPath}
+        fileResults={fileResults}
         onSelectProject={selectProject}
         onDeleteProject={deleteProject}
         onImported={handleImported}
@@ -492,6 +517,8 @@ export default function IDEPage() {
         batchError={batchError}
         onCancelBatchAnalysis={cancelBatchAnalysis}
         onReanalyze={handleReanalyze}
+        fileResults={fileResults}
+        onIssueClick={handleIssueClick}
       />
 
       {/* 右侧：会话历史面板 */}
