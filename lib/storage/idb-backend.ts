@@ -529,65 +529,124 @@ export class IdbBackend implements VfsBackend {
     if (items.length === 0) return [];
 
     const now = Date.now();
-    return this.withTx(
-      [STORE_FILES, STORE_PROJECTS],
-      "readwrite",
-      async (tx) => {
-        await this.ensureProjectExists(tx, projectId);
+    // 分块处理，避免单个事务过大；每块作为一个独立事务提交
+    const CHUNK_SIZE = 200;
+    const results: FileNode[] = [];
 
-        const results: FileNode[] = [];
-        const allPaths: string[] = [];
+    for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+      const chunk = items.slice(i, i + CHUNK_SIZE);
+      const chunkResults = await this.batchWriteChunk(projectId, chunk, now);
+      results.push(...chunkResults);
+    }
+    return results;
+  }
 
-        for (const item of items) {
-          const normalized = normalizePath(item.path);
-          validatePath(normalized);
-          if (normalized === "/") {
-            throw new VfsError("INVALID_PATH", "不能写入根路径");
-          }
-          allPaths.push(normalized);
+  /**
+   * 批量写入的分块实现。
+   * 关键优化：不逐个 await IDB 请求，而是同步地把所有 put 请求排进事务队列，
+   * 然后等事务的 oncomplete。IDB 会按队列顺序执行，性能远高于 await 每个请求。
+   * 注意：这里跳过了「已存在则保留 ctime / 已存在目录则报错」的逐条检查，
+   * 用 put 覆盖语义，ctime 统一用 now —— 导入场景下这是可接受的妥协。
+   */
+  private async batchWriteChunk(
+    projectId: string,
+    items: Array<{ path: string; content: string }>,
+    now: number,
+  ): Promise<FileNode[]> {
+    const db = await this.open();
 
-          const existing = await this.getRecordInTx(tx, projectId, normalized);
-          const ctime =
-            existing?.type === "file" ? existing.ctime : now;
+    // 先同步构建所有 record，避免在事务回调里做重计算
+    const fileRecords: FileRecord[] = [];
+    const results: FileNode[] = [];
+    const dirsToEnsure = new Set<string>();
 
-          if (existing?.type === "directory") {
-            throw new VfsError(
-              "ALREADY_EXISTS",
-              `同名目录已存在: ${item.path}`,
-            );
-          }
+    for (const item of items) {
+      const normalized = normalizePath(item.path);
+      validatePath(normalized);
+      if (normalized === "/") {
+        throw new VfsError("INVALID_PATH", "不能写入根路径");
+      }
 
-          const record: FileRecord = {
-            id: makeId(projectId, normalized),
+      const record: FileRecord = {
+        id: makeId(projectId, normalized),
+        projectId,
+        path: normalized,
+        parentPath: dirname(normalized),
+        type: "file",
+        size: new Blob([item.content]).size,
+        mtime: now,
+        ctime: now,
+        content: item.content,
+      };
+      fileRecords.push(record);
+      results.push(recordToNode(record));
+
+      // 收集所有祖先目录，稍后一次性建
+      for (const anc of ancestorPaths(normalized)) {
+        dirsToEnsure.add(anc);
+      }
+    }
+
+    return new Promise<FileNode[]>((resolve, reject) => {
+      const tx = db.transaction([STORE_FILES, STORE_PROJECTS], "readwrite");
+      const filesStore = tx.objectStore(STORE_FILES);
+      const projectsStore = tx.objectStore(STORE_PROJECTS);
+
+      let rejected = false;
+      const fail = (err: VfsError) => {
+        if (!rejected) {
+          rejected = true;
+          try { tx.abort(); } catch {}
+          reject(err);
+        }
+      };
+
+      // 1) 先确认项目存在
+      const projReq = projectsStore.get(projectId);
+      projReq.onerror = () =>
+        fail(new VfsError("BACKEND_ERROR", projReq.error?.message ?? ""));
+      projReq.onsuccess = () => {
+        if (rejected) return;
+        const project = projReq.result as Project | undefined;
+        if (!project) {
+          fail(new VfsError("NOT_FOUND", `项目不存在: ${projectId}`));
+          return;
+        }
+
+        // 2) 同步把所有 file put 排进队列（不 await）
+        for (const record of fileRecords) {
+          filesStore.put(record);
+        }
+
+        // 3) 同步把所有祖先目录 put 排进队列（覆盖式，存在则更新 mtime）
+        for (const dirPath of dirsToEnsure) {
+          const dirRecord: FileRecord = {
+            id: makeId(projectId, dirPath),
             projectId,
-            path: normalized,
-            parentPath: dirname(normalized),
-            type: "file",
-            size: new Blob([item.content]).size,
+            path: dirPath,
+            parentPath: dirname(dirPath),
+            type: "directory",
+            size: 0,
             mtime: now,
-            ctime,
-            content: item.content,
+            ctime: now,
           };
-
-          await this.putRecordInTx(tx, record);
-          results.push(recordToNode(record));
+          filesStore.put(dirRecord);
         }
 
-        // 确保所有父目录
-        const seenDirs = new Set<string>();
-        for (const p of allPaths) {
-          for (const anc of ancestorPaths(p)) {
-            if (!seenDirs.has(anc)) {
-              seenDirs.add(anc);
-              await this.ensureDirInTx(tx, projectId, anc, now);
-            }
-          }
-        }
+        // 4) 更新项目 updatedAt
+        project.updatedAt = now;
+        projectsStore.put(project);
+      };
 
-        await this.touchProjectInTx(tx, projectId, now);
-        return results;
-      },
-    );
+      // 5) 事务完成后 resolve；此时所有 put 已生效
+      tx.oncomplete = () => {
+        if (!rejected) resolve(results);
+      };
+      tx.onerror = () =>
+        fail(new VfsError("BACKEND_ERROR", tx.error?.message ?? "事务执行失败"));
+      tx.onabort = () =>
+        fail(new VfsError("BACKEND_ERROR", tx.error?.message ?? "事务被中止"));
+    });
   }
 
   // ---- 内部辅助 ----

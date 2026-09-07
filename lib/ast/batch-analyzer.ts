@@ -45,8 +45,11 @@ export class BatchAnalyzer {
   private cache = new Map<string, CachedResult>();
   private cancelled = false;
   private workerUrl: string | null = null;
+  private cancelCbs: Array<() => void> = [];
 
   constructor(options: BatchAnalyzerOptions = {}) {
+    // Worker 池大小：充分利用多核，AST 分析是 CPU 密集型任务，多 Worker 并行才能快
+    // 上限 8 防止极端多核机器创建过多 Worker
     this.concurrency = options.concurrency ?? Math.min(navigator.hardwareConcurrency || 4, 8);
     this.timeoutMs = options.timeoutMs ?? 30_000;
   }
@@ -207,7 +210,25 @@ export class BatchAnalyzer {
         worker.removeEventListener("message", handleMessage);
         if (timeoutId) clearTimeout(timeoutId);
         this.busyWorkers.delete(worker);
+        // 移除取消回调
+        const idx = this.cancelCbs.indexOf(onCancel);
+        if (idx >= 0) this.cancelCbs.splice(idx, 1);
       };
+
+      const onCancel = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve({
+          path: task.path,
+          success: false,
+          issues: [],
+          duration: 0,
+          error: "已取消",
+          contentHash,
+        });
+      };
+      this.cancelCbs.push(onCancel);
 
       worker.addEventListener("message", handleMessage);
 
@@ -231,9 +252,20 @@ export class BatchAnalyzer {
     });
   }
 
-  /** 取消当前批量分析 */
+  /** 取消当前批量分析：立即终止所有 Worker 并重建池 */
   cancel() {
     this.cancelled = true;
+    // 先触发所有挂起任务的取消回调，让 Promise 立即 resolve
+    for (const cb of this.cancelCbs) {
+      try { cb(); } catch {}
+    }
+    this.cancelCbs = [];
+    // 终止正在运行的 Worker（Worker 无法单独中止单个任务，只能整体 terminate）
+    for (const w of this.workers) {
+      w.terminate();
+    }
+    this.workers = [];
+    this.busyWorkers.clear();
   }
 
   /** 清空缓存 */

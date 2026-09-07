@@ -1,7 +1,18 @@
 "use client";
 import React, { useRef, useEffect, forwardRef, useImperativeHandle, useState } from "react";
-import Editor, { Monaco, OnMount } from "@monaco-editor/react";
+import dynamic from "next/dynamic";
+import type { Monaco, OnMount } from "@monaco-editor/react";
 import TabBar from "./TabBar";
+
+// 延迟加载 Monaco Editor，避免首屏就拉起 Monaco 的编译和 Web Worker
+const Editor = dynamic(() => import("@monaco-editor/react").then((m) => m.default), {
+  ssr: false,
+  loading: () => (
+    <div className="flex items-center justify-center h-full text-slate-600 text-sm">
+      加载编辑器...
+    </div>
+  ),
+});
 import AnalysisProgress from "./AnalysisProgress";
 import IssuesPanel from "./IssuesPanel";
 import type { EditorTab } from "@/hooks/useEditorTabs";
@@ -49,7 +60,12 @@ interface CodeEditorProps {
   batchProgress?: BatchProgress | null;
   batchResult?: BatchAnalysisResult | null;
   batchError?: string | null;
+  /** 收集文件内容中（startAnalysis 之前的阶段） */
+  isPreparing?: boolean;
+  /** 准备阶段的提示消息（如"无文件"或错误） */
+  prepareMessage?: string;
   onCancelBatchAnalysis?: () => void;
+  onStartBatchAnalysis?: () => void;
   onReanalyze?: () => void;
   // ---- 问题面板 ----
   fileResults?: Map<string, FileAnalysisResult>;
@@ -83,7 +99,10 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     batchProgress = null,
     batchResult = null,
     batchError = null,
+    isPreparing = false,
+    prepareMessage = "",
     onCancelBatchAnalysis,
+    onStartBatchAnalysis,
     onReanalyze,
     fileResults,
     onIssueClick,
@@ -94,6 +113,10 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   const monacoRef = useRef<Monaco | null>(null);
   const decorationsRef = useRef<string[]>([]);
   const [showIssuesPanel, setShowIssuesPanel] = useState(true);
+  const [issuesPanelHeight, setIssuesPanelHeight] = useState(224); // 56 * 4 = h-56
+  const isDraggingRef = useRef(false);
+  const startYRef = useRef(0);
+  const startHeightRef = useRef(0);
 
   // 暴露 scrollToLine 方法给父组件
   useImperativeHandle(ref, () => ({
@@ -176,9 +199,76 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     }
   }, [issues]);
 
+  // 底部面板拖拽调整高度
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current) return;
+      e.preventDefault();
+      const deltaY = startYRef.current - e.clientY;
+      let newHeight = startHeightRef.current + deltaY;
+      // 限制高度范围：100 ~ 600px
+      newHeight = Math.max(100, Math.min(600, newHeight));
+      setIssuesPanelHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, []);
+
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isDraggingRef.current = true;
+    startYRef.current = e.clientY;
+    startHeightRef.current = issuesPanelHeight;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+  };
+
   const handleEditorDidMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     monacoRef.current = monaco;
+
+    // 关闭 Monaco 自带的 TS/JS 语义和语法诊断
+    // 我们的 AST 分析（Web Worker）才是权威的问题来源，
+    // Monaco 自带的类型检查会给出大量无关飘红（缺 import、类型不匹配等），干扰用户
+    monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+      noSyntaxValidation: true,
+      noSemanticValidation: true,
+    });
+    monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+      noSyntaxValidation: true,
+      noSemanticValidation: true,
+    });
+
+    // 手动管理 layout，替代 automaticLayout: true
+    // automaticLayout 用 ResizeObserver 监听容器，但在 flex 布局中
+    // 可能导致 layout() → reflow → resize → layout() 循环，CPU 持续拉满
+    const container = editor.getContainerDomNode();
+    let resizeRaf = 0;
+    const resizeObserver = new ResizeObserver(() => {
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(() => {
+        editor.layout();
+      });
+    });
+    resizeObserver.observe(container);
+
+    // 编辑器卸载时清理
+    editor.onDidDispose(() => {
+      resizeObserver.disconnect();
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+    });
 
     // 注册自定义样式
     const style = document.createElement("style");
@@ -302,7 +392,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
             minimap: { enabled: false },
             fontSize: 14,
             wordWrap: "on",
-            automaticLayout: true,
+            automaticLayout: false,
             glyphMargin: true,
             folding: true,
             lineNumbers: "on",
@@ -313,6 +403,39 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
 
       {/* 底部：分析相关区域 */}
       <div className="shrink-0 border-t border-slate-800 bg-slate-900 flex flex-col">
+        {/* 准备中：收集文件内容阶段 */}
+        {isPreparing && (
+          <div className="px-3 py-2 flex items-center gap-2">
+            <span className="inline-block w-3 h-3 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs text-cyan-400">正在收集文件内容...</span>
+          </div>
+        )}
+
+        {/* 准备阶段的提示消息（无文件/错误） */}
+        {!isPreparing && prepareMessage && (
+          <div className="px-3 py-2">
+            <span className="text-xs text-amber-400">⚠ {prepareMessage}</span>
+          </div>
+        )}
+
+        {/* 没有任何分析状态时：显示「开始批量分析」入口 */}
+        {!isPreparing && !prepareMessage && !batchAnalyzing && !batchResult && !batchError &&
+          (!fileResults || fileResults.size === 0) && onStartBatchAnalysis && (
+            <div className="px-3 py-2 flex items-center justify-between gap-3">
+              <span className="text-xs text-slate-500">
+                还没有分析结果 —— 对当前项目所有支持文件运行 AST 静态分析
+              </span>
+              <button
+                onClick={onStartBatchAnalysis}
+                disabled={isPreparing}
+                className="px-3 py-1 text-xs font-medium rounded bg-cyan-600/20 text-cyan-400 border border-cyan-600/40 hover:bg-cyan-600/40 hover:text-cyan-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="开始批量分析"
+              >
+                ⚡ 开始批量分析
+              </button>
+            </div>
+          )}
+
         {/* 批量分析进度条 */}
         {(batchAnalyzing || batchResult || batchError) && (
           <AnalysisProgress
@@ -325,11 +448,20 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
           />
         )}
 
-        {/* 问题面板切换条 */}
+        {/* 问题面板切换条 + 拖拽手柄 */}
         {fileResults && fileResults.size > 0 && (
           <>
+            {/* 拖拽调整手柄（放在标题栏顶部） */}
             <div
-              className="flex items-center justify-between px-3 py-1.5 text-xs cursor-pointer hover:bg-slate-800/40 border-t border-slate-800"
+              onMouseDown={handleResizeStart}
+              className="group relative h-2 cursor-ns-resize bg-slate-800 hover:bg-cyan-500/30 transition-colors"
+              title="上下拖拽调整高度"
+            >
+              {/* 中间的抓握指示线 */}
+              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-0.5 rounded-full bg-slate-600 group-hover:bg-cyan-400 transition-colors" />
+            </div>
+            <div
+              className="flex items-center justify-between px-3 py-1.5 text-xs cursor-pointer hover:bg-slate-800/40"
               onClick={() => setShowIssuesPanel((v) => !v)}
             >
               <div className="flex items-center gap-2">
@@ -347,12 +479,12 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
               </div>
             </div>
             {showIssuesPanel && (
-              <div className="h-56 border-t border-slate-800">
+              <div style={{ height: `${issuesPanelHeight}px` }} className="border-t border-slate-800">
                 <IssuesPanel
-              fileResults={fileResults}
-              onIssueClick={onIssueClick}
-              activeFilePath={activeTabPath ?? null}
-            />
+                  fileResults={fileResults}
+                  onIssueClick={onIssueClick}
+                  activeFilePath={activeTabPath ?? null}
+                />
               </div>
             )}
           </>
