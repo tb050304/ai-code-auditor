@@ -582,7 +582,11 @@ const ruleNoInlineFunction: Rule = {
   check: (path) => {
     if (t.isArrowFunctionExpression(path.node) || t.isFunctionExpression(path.node)) {
       const parent = path.parent;
-      if (parent && t.isJSXAttribute(parent)) {
+      // JSX 属性值通常包裹在 JSXExpressionContainer 中
+      const isInJSXAttr =
+        (parent && t.isJSXAttribute(parent)) ||
+        (parent && t.isJSXExpressionContainer(parent) && t.isJSXAttribute(path.parentPath?.parent));
+      if (isInJSXAttr) {
         const loc = getNodeLocation(path.node);
         return {
           id: "react-no-inline-function",

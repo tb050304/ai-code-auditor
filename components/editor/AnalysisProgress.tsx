@@ -21,11 +21,11 @@ export default function AnalysisProgress({
 }: AnalysisProgressProps) {
   if (!isAnalyzing && !result && !error) return null;
 
-  const percent = progress ? Math.round(progress.percent * 100) : result ? 100 : 0;
+  const percent = progress ? Math.round(progress.percent * 100) : 0;
 
   return (
     <div className="bg-slate-900 border-t border-slate-800 px-4 py-2 text-xs text-slate-400 flex items-center gap-3 shrink-0">
-      {isAnalyzing && progress ? (
+      {isAnalyzing ? (
         <>
           <span className="text-cyan-400 flex-shrink-0">⚡ 批量分析中</span>
           <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden max-w-md">
@@ -34,19 +34,25 @@ export default function AnalysisProgress({
               style={{ width: `${percent}%` }}
             />
           </div>
-          <span className="flex-shrink-0 text-slate-500 tabular-nums">
-            {progress.completed}/{progress.total} ({percent}%)
-          </span>
-          <span className="flex-shrink-0 truncate max-w-[200px] text-slate-500" title={progress.currentPath}>
-            {progress.currentPath}
-          </span>
+          {progress ? (
+            <span className="flex-shrink-0 text-slate-500 tabular-nums">
+              {progress.completed}/{progress.total} ({percent}%)
+            </span>
+          ) : (
+            <span className="flex-shrink-0 text-slate-500">准备中…</span>
+          )}
+          {progress && (
+            <span className="flex-shrink-0 truncate max-w-[200px] text-slate-500" title={progress.currentPath}>
+              {progress.currentPath}
+            </span>
+          )}
           {onCancel && (
             <button
               onClick={onCancel}
-              className="flex-shrink-0 text-slate-500 hover:text-slate-300 ml-2"
+              className="flex-shrink-0 ml-2 px-2 py-0.5 rounded bg-red-600/20 text-red-400 hover:bg-red-600/40 hover:text-red-300 border border-red-600/30 transition-colors"
               title="取消分析"
             >
-              ✕
+              取消
             </button>
           )}
         </>

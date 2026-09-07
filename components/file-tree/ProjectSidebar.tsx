@@ -39,7 +39,7 @@ export default function ProjectSidebar({
   onDeleteNode,
   onRenameNode,
 }: ProjectSidebarProps) {
-  const [showDropzone, setShowDropzone] = useState(projects.length === 0);
+  const [showDropzone, setShowDropzone] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
 

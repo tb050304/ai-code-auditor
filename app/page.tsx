@@ -242,83 +242,89 @@ export default function IDEPage() {
     [tabs, saveActiveTab, writeFile],
   );
 
-  // 导入成功后刷新 + 重新批量分析
+  // 导入成功后刷新项目列表 + 自动选中新导入的项目（否则文件树空白）
   const handleImported = useCallback(
-    (_result: ImportResult) => {
+    (result: ImportResult) => {
       refreshProjects();
+      selectProject(result.projectId);
     },
-    [refreshProjects],
+    [refreshProjects, selectProject],
   );
 
-  // 切换项目后自动触发批量分析
-  const runIdRef = useRef(0);
-  useEffect(() => {
-    if (!activeProjectId || !fileTree) return;
+  // 收集当前项目所有可分析文件并读取内容
+  const collectAnalyzableTasks = useCallback(async () => {
+    if (!activeProjectId || !fileTree) return [];
 
-    const runId = ++runIdRef.current;
-
-    (async () => {
-      // 收集所有可分析文件的内容
-      const analyzable: Array<{ path: string; content: string }> = [];
-
-      const walk = (node: typeof fileTree): void => {
-        if (!node) return;
-        if (node.type === "file" && isAnalyzableFile(node.path)) {
-          analyzable.push({ path: node.path, content: "" });
-        }
-        if (node.type === "directory" && node.children) {
-          for (const child of node.children) walk(child as any);
-        }
-      };
-      walk(fileTree);
-
-      if (analyzable.length === 0) return;
-
-      // 批量读取内容（用 Promise.all 并发读）
-      const tasks = await Promise.all(
-        analyzable.map(async (f) => ({
-          path: f.path,
-          content: await readFile(f.path),
-        })),
-      );
-
-      if (runId !== runIdRef.current) return;
-
-      startBatchAnalysis(tasks);
-    })();
-
-    return () => {
-      runIdRef.current++;
+    const analyzable: string[] = [];
+    const walk = (node: typeof fileTree): void => {
+      if (!node) return;
+      if (node.type === "file" && isAnalyzableFile(node.path)) {
+        analyzable.push(node.path);
+      }
+      if (node.type === "directory" && node.children) {
+        for (const child of node.children) walk(child as any);
+      }
     };
-  }, [activeProjectId, fileTree?.path, readFile, startBatchAnalysis]);
+    walk(fileTree);
 
-  // 手动重新分析当前项目
-  const handleReanalyze = useCallback(() => {
-    if (!activeProjectId || !fileTree) return;
-
-    (async () => {
-      const analyzable: Array<{ path: string; content: string }> = [];
-      const walk = (node: any): void => {
-        if (!node) return;
-        if (node.type === "file" && isAnalyzableFile(node.path)) {
-          analyzable.push({ path: node.path, content: "" });
-        }
-        if (node.children) {
-          for (const child of node.children) walk(child);
-        }
-      };
-      walk(fileTree);
-
-      const tasks = await Promise.all(
-        analyzable.map(async (f) => ({
-          path: f.path,
-          content: await readFile(f.path),
-        })),
+    // 分批读取，避免一次性全量请求 IndexedDB 导致卡顿
+    const tasks: Array<{ path: string; content: string }> = [];
+    const batchSize = 30;
+    for (let i = 0; i < analyzable.length; i += batchSize) {
+      const batch = analyzable.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(async (path) => {
+          try {
+            const content = await readFile(path);
+            return { path, content };
+          } catch {
+            return null;
+          }
+        }),
       );
+      for (const r of results) {
+        if (r) tasks.push(r);
+      }
+      // 让出主线程
+      if (i + batchSize < analyzable.length) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+    return tasks;
+  }, [activeProjectId, fileTree, readFile]);
 
-      startBatchAnalysis(tasks);
-    })();
-  }, [activeProjectId, fileTree, readFile, startBatchAnalysis]);
+  // 批量分析准备中（收集文件内容阶段）
+  const [isPreparing, setIsPreparing] = useState(false);
+  const [prepareMessage, setPrepareMessage] = useState<string>("");
+
+  // 手动启动批量分析
+  const handleStartBatchAnalysis = useCallback(async () => {
+    if (!activeProjectId || !fileTree) {
+      setPrepareMessage("请先导入或选择一个项目");
+      setTimeout(() => setPrepareMessage(""), 3000);
+      return;
+    }
+
+    setIsPreparing(true);
+    setPrepareMessage("");
+    try {
+      const tasks = await collectAnalyzableTasks();
+      if (tasks.length === 0) {
+        setPrepareMessage("当前项目没有可分析的文件（仅支持 .js/.jsx/.ts/.tsx/.mjs/.cjs）");
+        setTimeout(() => setPrepareMessage(""), 5000);
+      } else {
+        startBatchAnalysis(tasks);
+      }
+    } catch (e) {
+      setPrepareMessage(`收集文件失败: ${e instanceof Error ? e.message : String(e)}`);
+      setTimeout(() => setPrepareMessage(""), 5000);
+    } finally {
+      setIsPreparing(false);
+    }
+  }, [activeProjectId, fileTree, collectAnalyzableTasks, startBatchAnalysis]);
+
+  // 重新分析 = 和开始分析共用逻辑
+  const handleReanalyze = handleStartBatchAnalysis;
 
   // 拖拽分隔条
   const dragState = useRef({ isDragging: false, startX: 0, startWidth: 0 });
@@ -515,7 +521,10 @@ export default function IDEPage() {
         batchProgress={batchProgress}
         batchResult={batchResult}
         batchError={batchError}
+        isPreparing={isPreparing}
+        prepareMessage={prepareMessage}
         onCancelBatchAnalysis={cancelBatchAnalysis}
+        onStartBatchAnalysis={handleStartBatchAnalysis}
         onReanalyze={handleReanalyze}
         fileResults={fileResults}
         onIssueClick={handleIssueClick}
