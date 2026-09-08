@@ -397,6 +397,8 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
             folding: true,
             lineNumbers: "on",
             renderLineHighlight: "all",
+            scrollBeyondLastLine: false,
+            scrollBeyondLastColumn: 0,
           }}
         />
       </div>

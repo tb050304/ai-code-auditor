@@ -122,13 +122,18 @@ export default function FileDropzone({ onImported, mode = "inline" }: FileDropzo
       // 重置 input，允许重复选择同一文件
       e.target.value = "";
 
-      // 同步设好状态，overlay 立刻显示
-      const total = fileList.length;
+      if (fileList.length === 0) return;
+
+      // 同步设好状态，让 React 在同一个事件周期内就知道要显示 overlay
       setIsImporting(true);
       setIsScanning(false);
-      setProgress({ processed: 0, total, currentFile: "" });
+      setProgress({ processed: 0, total: fileList.length, currentFile: "准备中..." });
 
-      handleFiles(fileList);
+      // 关键：用 setTimeout 把导入逻辑推到下一个宏任务
+      // 这样 React 有机会先把 overlay 渲染出来，用户不会看到几秒白屏
+      setTimeout(() => {
+        handleFiles(fileList);
+      }, 0);
     },
     [handleFiles],
   );
