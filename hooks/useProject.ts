@@ -4,6 +4,7 @@ import { getDefaultBackend } from "@/lib/storage";
 import type { Project, FileNode } from "@/lib/storage";
 import { buildTree, type TreeNode } from "@/lib/storage/file-tree";
 import { dirname, joinPath } from "@/lib/storage/path";
+import { getSnapshotManager } from "@/lib/snapshots";
 
 export interface UseProjectReturn {
   projects: Project[];
@@ -139,6 +140,14 @@ export function useProject(): UseProjectReturn {
   const deleteProject = useCallback(
     async (id: string) => {
       await backendRef.current.deleteProject(id);
+
+      // 项目删除后清理其全部快照（尽力而为，避免孤儿数据永久占用空间）
+      try {
+        await getSnapshotManager().purgeProject(id);
+      } catch (e) {
+        console.error("清理项目快照失败:", e);
+      }
+
       setProjects((prev) => prev.filter((p) => p.id !== id));
       if (activeProjectId === id) {
         const remaining = projects.filter((p) => p.id !== id);
@@ -152,6 +161,20 @@ export function useProject(): UseProjectReturn {
     async (path: string, content: string) => {
       if (!activeProjectId) throw new Error("无活动项目");
       const normalized = joinPath(path);
+
+      // 自动快照：覆盖写入前保存旧内容（尽力而为，失败不阻塞保存）
+      try {
+        const oldContent = await backendRef.current.readFile(activeProjectId, normalized);
+        if (oldContent !== content) {
+          await getSnapshotManager().captureBeforeWrite(activeProjectId, normalized, oldContent, {
+            source: "manual-save",
+            description: "保存前自动快照",
+          });
+        }
+      } catch {
+        // 文件不存在（新建）或快照存储异常：跳过快照，正常写入
+      }
+
       const node = await backendRef.current.writeFile(activeProjectId, normalized, content);
       await refreshFileTree();
       return node;
@@ -186,6 +209,14 @@ export function useProject(): UseProjectReturn {
       const parent = dirname(oldPath);
       const newPath = joinPath(parent, newName);
       const node = await backendRef.current.rename(activeProjectId, oldPath, newPath);
+
+      // 快照历史跟随文件迁移（尽力而为，失败不影响重命名）
+      try {
+        await getSnapshotManager().migratePath(activeProjectId, oldPath, newPath);
+      } catch (e) {
+        console.error("迁移文件快照历史失败:", e);
+      }
+
       await refreshFileTree();
       return node;
     },
