@@ -57,6 +57,10 @@ export default function IDEPage() {
     deleteNode,
     renameNode,
     readFile,
+    createProjectSnapshot,
+    restoreProjectSnapshot,
+    listProjectSnapshots,
+    deleteProjectSnapshot,
   } = useProject();
 
   // ---- 多 Tab 编辑器 ----
@@ -240,6 +244,16 @@ export default function IDEPage() {
       });
     },
     [tabs, saveActiveTab, writeFile],
+  );
+
+  // 恢复项目快照后关闭所有 Tab（文件可能被删或内容已变）
+  const handleRestoreSnapshot = useCallback(
+    async (id: string) => {
+      const snapshot = await restoreProjectSnapshot(id);
+      closeAllTabs();
+      return snapshot;
+    },
+    [restoreProjectSnapshot, closeAllTabs],
   );
 
   // 导入成功后刷新项目列表 + 自动选中新导入的项目（否则文件树空白）
@@ -491,6 +505,10 @@ export default function IDEPage() {
         onCreateDir={handleCreateDir}
         onDeleteNode={handleDeleteNode}
         onRenameNode={handleRenameNode}
+        onCreateSnapshot={createProjectSnapshot}
+        onRestoreSnapshot={handleRestoreSnapshot}
+        onListSnapshots={listProjectSnapshots}
+        onDeleteSnapshot={deleteProjectSnapshot}
       />
 
       {/* 代码编辑器（多 Tab 模式） */}

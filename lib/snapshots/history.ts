@@ -20,6 +20,8 @@ function makeId(seq: number): string {
  */
 export class SnapshotManager {
   private seq = 0;
+  /** 上一次分配的时间戳：保证同实例内严格递增，避免同一毫秒内多个快照排序不稳定 */
+  private lastTs = 0;
 
   constructor(
     private store: SnapshotStore,
@@ -45,13 +47,16 @@ export class SnapshotManager {
     const newest = existing[existing.length - 1];
     if (newest && newest.content === oldContent) return null;
 
+    const ts = Math.max(Date.now(), this.lastTs + 1);
+    this.lastTs = ts;
+
     const snapshot: FileSnapshot = {
       id: makeId(this.seq++),
       projectId,
       path,
       content: oldContent,
       encoding: "full",
-      createdAt: Date.now(),
+      createdAt: ts,
       source: meta.source,
       description: meta.description,
       size: oldContent.length,
