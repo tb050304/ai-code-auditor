@@ -4,7 +4,12 @@ import { getDefaultBackend } from "@/lib/storage";
 import type { Project, FileNode } from "@/lib/storage";
 import { buildTree, type TreeNode } from "@/lib/storage/file-tree";
 import { dirname, joinPath } from "@/lib/storage/path";
-import { getSnapshotManager } from "@/lib/snapshots";
+import {
+  getSnapshotManager,
+  getProjectSnapshotManager,
+  type ProjectSnapshot,
+  type ProjectIo,
+} from "@/lib/snapshots";
 
 export interface UseProjectReturn {
   projects: Project[];
@@ -29,6 +34,16 @@ export interface UseProjectReturn {
   deleteNode: (path: string) => Promise<void>;
   renameNode: (oldPath: string, newName: string) => Promise<FileNode>;
   readFile: (path: string) => Promise<string>;
+
+  // ---- 项目级快照 ----
+  /** 给当前项目打版本标签 */
+  createProjectSnapshot: (name: string, description?: string) => Promise<ProjectSnapshot>;
+  /** 恢复项目到指定快照（恢复前自动备份当前状态） */
+  restoreProjectSnapshot: (id: string) => Promise<ProjectSnapshot>;
+  /** 列出当前项目的全部快照（新 → 旧） */
+  listProjectSnapshots: () => Promise<ProjectSnapshot[]>;
+  /** 删除单条项目快照 */
+  deleteProjectSnapshot: (id: string) => Promise<void>;
 }
 
 const STORAGE_KEY = "ai-code-auditor:active-project";
@@ -141,9 +156,14 @@ export function useProject(): UseProjectReturn {
     async (id: string) => {
       await backendRef.current.deleteProject(id);
 
-      // 项目删除后清理其全部快照（尽力而为，避免孤儿数据永久占用空间）
+      // 项目删除后清理其全部快照（文件级 + 项目级，尽力而为，避免孤儿数据永久占用空间）
       try {
         await getSnapshotManager().purgeProject(id);
+      } catch (e) {
+        console.error("清理文件快照失败:", e);
+      }
+      try {
+        await getProjectSnapshotManager().purgeProject(id);
       } catch (e) {
         console.error("清理项目快照失败:", e);
       }
@@ -231,6 +251,57 @@ export function useProject(): UseProjectReturn {
     [activeProjectId],
   );
 
+  // ---- 项目级快照 ----
+
+  /** 项目快照管理器访问 VFS 的 io 适配层 */
+  const projectIo = useCallback(async (): Promise<ProjectIo> => {
+    const projectId = activeProjectId;
+    if (!projectId) throw new Error("无活动项目");
+    const backend = backendRef.current;
+    return {
+      listFiles: async () =>
+        (await backend.listAllFiles(projectId)).map((n) => n.path),
+      readFile: (path) => backend.readFile(projectId, path),
+      deleteFile: (path) => backend.delete(projectId, path),
+      writeFiles: (items) => backend.batchWrite(projectId, items).then(() => undefined),
+    };
+  }, [activeProjectId]);
+
+  const createProjectSnapshot = useCallback(
+    async (name: string, description?: string) => {
+      const io = await projectIo();
+      return getProjectSnapshotManager().createSnapshot(activeProjectId!, {
+        name: name.trim() || "未命名快照",
+        description,
+        source: "manual",
+      }, io);
+    },
+    [activeProjectId, projectIo],
+  );
+
+  const restoreProjectSnapshot = useCallback(
+    async (id: string) => {
+      const io = await projectIo();
+      const result = await getProjectSnapshotManager().restore(activeProjectId!, id, io);
+      if (!result) throw new Error("快照不存在");
+      await refreshFileTree();
+      return result.snapshot;
+    },
+    [activeProjectId, projectIo, refreshFileTree],
+  );
+
+  const listProjectSnapshots = useCallback(async () => {
+    if (!activeProjectId) return [];
+    return getProjectSnapshotManager().listSnapshots(activeProjectId);
+  }, [activeProjectId]);
+
+  const deleteProjectSnapshot = useCallback(
+    async (id: string) => {
+      await getProjectSnapshotManager().deleteSnapshot(id);
+    },
+    [],
+  );
+
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
 
   return {
@@ -246,9 +317,13 @@ export function useProject(): UseProjectReturn {
     fileTree,
     refreshFileTree,
     writeFile,
-    mkdir,
-    deleteNode,
-    renameNode,
-    readFile,
+  mkdir,
+  deleteNode,
+  renameNode,
+  readFile,
+  createProjectSnapshot,
+  restoreProjectSnapshot,
+  listProjectSnapshots,
+  deleteProjectSnapshot,
   };
 }

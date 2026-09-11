@@ -2,9 +2,11 @@
 import React, { useState, useCallback } from "react";
 import FileDropzone from "@/components/file-dropzone/FileDropzone";
 import FileTree from "@/components/file-tree/FileTree";
+import ProjectSnapshotPanel from "@/components/snapshots/ProjectSnapshotPanel";
 import type { Project, FileNode } from "@/lib/storage";
 import type { TreeNode } from "@/lib/storage/file-tree";
 import type { ImportResult } from "@/lib/storage/import";
+import type { ProjectSnapshot } from "@/lib/snapshots";
 import type { FileAnalysisResult } from "@/lib/ast/batch-types";
 import { joinPath } from "@/lib/storage/path";
 
@@ -22,6 +24,11 @@ interface ProjectSidebarProps {
   onCreateDir: (parentDir: string, name: string) => void;
   onDeleteNode: (path: string, type: "file" | "directory") => void;
   onRenameNode: (oldPath: string, newName: string) => void;
+  // ---- 项目级快照 ----
+  onCreateSnapshot: (name: string, description?: string) => Promise<ProjectSnapshot>;
+  onRestoreSnapshot: (id: string) => Promise<ProjectSnapshot>;
+  onListSnapshots: () => Promise<ProjectSnapshot[]>;
+  onDeleteSnapshot: (id: string) => Promise<void>;
 }
 
 export default function ProjectSidebar({
@@ -38,10 +45,15 @@ export default function ProjectSidebar({
   onCreateDir,
   onDeleteNode,
   onRenameNode,
+  onCreateSnapshot,
+  onRestoreSnapshot,
+  onListSnapshots,
+  onDeleteSnapshot,
 }: ProjectSidebarProps) {
   const [showDropzone, setShowDropzone] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [showSnapshotPanel, setShowSnapshotPanel] = useState(false);
 
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
 
@@ -68,6 +80,14 @@ export default function ProjectSidebar({
       <div className="p-3 border-b border-slate-800 flex items-center justify-between">
         <span className="text-sm font-medium text-slate-200">项目</span>
         <div className="flex items-center gap-1">
+          <button
+            className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 rounded transition-colors"
+            onClick={() => setShowSnapshotPanel(true)}
+            disabled={!activeProjectId}
+            title="项目快照：打版本标签 / 恢复"
+          >
+            📸 快照
+          </button>
           <button
             className="px-2 py-1 text-xs bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-colors"
             onClick={() => setShowDropzone((v) => !v)}
@@ -164,6 +184,17 @@ export default function ProjectSidebar({
           <div>{fileCount} 个文件</div>
         </div>
       )}
+
+      {/* 项目快照面板 */}
+      <ProjectSnapshotPanel
+        open={showSnapshotPanel}
+        onClose={() => setShowSnapshotPanel(false)}
+        hasProject={!!activeProjectId}
+        onCreateSnapshot={onCreateSnapshot}
+        onRestoreSnapshot={onRestoreSnapshot}
+        onListSnapshots={onListSnapshots}
+        onDeleteSnapshot={onDeleteSnapshot}
+      />
 
       {/* 删除项目确认弹窗 */}
       {showDeleteConfirm && (
