@@ -509,6 +509,7 @@ export default function IDEPage() {
         onRestoreSnapshot={handleRestoreSnapshot}
         onListSnapshots={listProjectSnapshots}
         onDeleteSnapshot={deleteProjectSnapshot}
+        onReadCurrentFile={readFile}
       />
 
       {/* 代码编辑器（多 Tab 模式） */}

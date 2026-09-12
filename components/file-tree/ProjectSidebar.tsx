@@ -29,6 +29,8 @@ interface ProjectSidebarProps {
   onRestoreSnapshot: (id: string) => Promise<ProjectSnapshot>;
   onListSnapshots: () => Promise<ProjectSnapshot[]>;
   onDeleteSnapshot: (id: string) => Promise<void>;
+  /** 读取当前文件内容（快照对比用） */
+  onReadCurrentFile?: (path: string) => Promise<string>;
 }
 
 export default function ProjectSidebar({
@@ -49,6 +51,7 @@ export default function ProjectSidebar({
   onRestoreSnapshot,
   onListSnapshots,
   onDeleteSnapshot,
+  onReadCurrentFile,
 }: ProjectSidebarProps) {
   const [showDropzone, setShowDropzone] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
@@ -194,6 +197,7 @@ export default function ProjectSidebar({
         onRestoreSnapshot={onRestoreSnapshot}
         onListSnapshots={onListSnapshots}
         onDeleteSnapshot={onDeleteSnapshot}
+        onReadCurrentFile={onReadCurrentFile}
       />
 
       {/* 删除项目确认弹窗 */}
