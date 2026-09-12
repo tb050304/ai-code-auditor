@@ -2,6 +2,8 @@
 import React, { useState, useCallback, useEffect } from "react";
 import type { ProjectSnapshot, ProjectSnapshotSource } from "@/lib/snapshots";
 import { formatSize } from "@/lib/storage/import";
+import { inferMonacoLanguage } from "@/lib/monaco-lang";
+import DiffViewer from "@/components/diff/DiffViewer";
 
 interface ProjectSnapshotPanelProps {
   open: boolean;
@@ -12,6 +14,15 @@ interface ProjectSnapshotPanelProps {
   onRestoreSnapshot: (id: string) => Promise<ProjectSnapshot>;
   onListSnapshots: () => Promise<ProjectSnapshot[]>;
   onDeleteSnapshot: (id: string) => Promise<void>;
+  /** 读取当前 VFS 中文件内容，用于快照版本 vs 当前版本的对比；文件已删时抛错 */
+  onReadCurrentFile?: (path: string) => Promise<string>;
+}
+
+/** diff 弹窗所需的数据 */
+interface DiffTarget {
+  path: string;
+  snapshotContent: string;
+  currentContent: string;
 }
 
 const SOURCE_BADGE: Record<ProjectSnapshotSource, { label: string; cls: string }> = {
@@ -41,6 +52,7 @@ export default function ProjectSnapshotPanel({
   onRestoreSnapshot,
   onListSnapshots,
   onDeleteSnapshot,
+  onReadCurrentFile,
 }: ProjectSnapshotPanelProps) {
   const [snapshots, setSnapshots] = useState<ProjectSnapshot[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -48,6 +60,11 @@ export default function ProjectSnapshotPanel({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [message, setMessage] = useState("");
+  /** 正在查看文件列表的快照（对比入口） */
+  const [comparingSnap, setComparingSnap] = useState<ProjectSnapshot | null>(null);
+  /** 打开的 diff 目标 */
+  const [diffTarget, setDiffTarget] = useState<DiffTarget | null>(null);
+  const [diffLoadingPath, setDiffLoadingPath] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!hasProject) return;
@@ -63,7 +80,13 @@ export default function ProjectSnapshotPanel({
 
   // 打开时加载一次
   useEffect(() => {
-    if (open) refresh();
+    if (open) {
+      refresh();
+    } else {
+      // 关闭时退出文件对比子视图
+      setComparingSnap(null);
+      setDiffTarget(null);
+    }
   }, [open, refresh]);
 
   const showMsg = useCallback((text: string) => {
@@ -129,6 +152,28 @@ export default function ProjectSnapshotPanel({
     [isWorking, onDeleteSnapshot, showMsg, refresh],
   );
 
+  // 打开快照中某个文件与当前版本的 diff
+  const handleOpenDiff = useCallback(
+    async (snap: ProjectSnapshot, filePath: string) => {
+      const snapshotContent =
+        snap.files.find((f) => f.path === filePath)?.content ?? "";
+      let currentContent = "";
+      setDiffLoadingPath(filePath);
+      try {
+        currentContent = onReadCurrentFile
+          ? await onReadCurrentFile(filePath)
+          : "";
+      } catch {
+        // 文件已被删除 → 当前内容按空处理（diff 显示为删除状态）
+        currentContent = "";
+      } finally {
+        setDiffLoadingPath(null);
+      }
+      setDiffTarget({ path: filePath, snapshotContent, currentContent });
+    },
+    [onReadCurrentFile],
+  );
+
   if (!open) return null;
 
   return (
@@ -136,7 +181,18 @@ export default function ProjectSnapshotPanel({
       <div className="bg-slate-900 border border-slate-700 rounded-xl w-[480px] max-w-[92vw] max-h-[80vh] flex flex-col shadow-2xl">
         {/* 头部 */}
         <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-          <span className="text-sm font-medium text-slate-200">📸 项目快照</span>
+          {comparingSnap ? (
+            <button
+              className="text-sm font-medium text-slate-300 hover:text-cyan-400 flex items-center gap-1 truncate"
+              onClick={() => setComparingSnap(null)}
+              title="返回快照列表"
+            >
+              <span>←</span>
+              <span className="truncate">「{comparingSnap.name}」中的文件（点击对比当前版本）</span>
+            </button>
+          ) : (
+            <span className="text-sm font-medium text-slate-200">📸 项目快照</span>
+          )}
           <button
             className="text-slate-500 hover:text-slate-300 text-sm"
             onClick={onClose}
@@ -146,7 +202,8 @@ export default function ProjectSnapshotPanel({
           </button>
         </div>
 
-        {/* 创建快照 */}
+        {/* 创建快照（文件对比子视图下隐藏） */}
+        {!comparingSnap && (
         <div className="p-4 border-b border-slate-800 space-y-2">
           <div className="flex gap-2">
             <input
@@ -178,6 +235,7 @@ export default function ProjectSnapshotPanel({
             <div className="text-xs text-slate-500">请先选择一个项目</div>
           )}
         </div>
+        )}
 
         {/* 操作结果提示 */}
         {message && (
@@ -186,7 +244,34 @@ export default function ProjectSnapshotPanel({
           </div>
         )}
 
-        {/* 快照列表 */}
+        {/* 文件对比子视图：列出快照中的全部文件 */}
+        {comparingSnap ? (
+          <div className="flex-1 overflow-y-auto min-h-[120px]">
+            {comparingSnap.files.length === 0 ? (
+              <div className="p-6 text-xs text-slate-500 text-center">该快照不包含任何文件</div>
+            ) : (
+              <div className="divide-y divide-slate-800">
+                {comparingSnap.files.map((f) => (
+                  <button
+                    key={f.path}
+                    onClick={() => handleOpenDiff(comparingSnap, f.path)}
+                    disabled={diffLoadingPath !== null}
+                    className="w-full text-left px-4 py-2 hover:bg-slate-800/40 disabled:opacity-50 flex items-center justify-between gap-2"
+                  >
+                    <span className="text-xs text-slate-300 truncate font-mono">
+                      {diffLoadingPath === f.path ? "加载中... " : "🔍 "}
+                      {f.path.slice(1)}
+                    </span>
+                    <span className="text-[10px] text-slate-600 flex-shrink-0">
+                      {formatSize(f.content.length)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+        /* 快照列表 */
         <div className="flex-1 overflow-y-auto min-h-[120px]">
           {isLoading ? (
             <div className="p-4 text-xs text-slate-500 text-center">加载中...</div>
@@ -220,6 +305,14 @@ export default function ProjectSnapshotPanel({
                       </div>
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
+                          onClick={() => setComparingSnap(snap)}
+                          disabled={isWorking}
+                          className="px-2 py-1 text-[11px] text-slate-300 border border-slate-600/60 rounded hover:bg-slate-700/40 disabled:opacity-40 whitespace-nowrap"
+                          title="逐文件对比该快照与当前版本"
+                        >
+                          对比
+                        </button>
+                        <button
                           onClick={() => handleRestore(snap)}
                           disabled={isWorking}
                           className="px-2 py-1 text-[11px] text-cyan-400 border border-cyan-600/40 rounded hover:bg-cyan-500/10 disabled:opacity-40 whitespace-nowrap"
@@ -242,12 +335,29 @@ export default function ProjectSnapshotPanel({
             </div>
           )}
         </div>
+        )}
 
         {/* 底部说明 */}
         <div className="px-4 py-2 border-t border-slate-800 text-[11px] text-slate-600">
-          恢复 = 项目回到快照时的状态；恢复前当前状态自动备份，不会丢失。
+          {comparingSnap
+            ? "左侧为快照版本，右侧为当前版本；逐块接受/拒绝后可复制合并结果。"
+            : "恢复 = 项目回到快照时的状态；恢复前当前状态自动备份，不会丢失。"}
         </div>
       </div>
+
+      {/* Diff 对比弹窗（快照版本 vs 当前版本；应用回写在 Day 11 接入） */}
+      {diffTarget && (
+        <DiffViewer
+          open={!!diffTarget}
+          onClose={() => setDiffTarget(null)}
+          title={diffTarget.path.slice(1)}
+          original={diffTarget.snapshotContent}
+          modified={diffTarget.currentContent}
+          language={inferMonacoLanguage(diffTarget.path)}
+          originalLabel="快照版本"
+          modifiedLabel="当前版本"
+        />
+      )}
     </div>
   );
 }
