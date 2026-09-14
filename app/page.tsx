@@ -15,6 +15,7 @@ import { isAnalyzableFile } from "@/lib/ast/batch-types";
 import { createMessage, buildHistoryMessages } from "@/lib/messages";
 import type { Conversation } from "@/types";
 import type { ImportResult } from "@/lib/storage/import";
+import type { SnapshotMeta } from "@/lib/snapshots";
 
 export default function IDEPage() {
   const [userPrompt, setUserPrompt] = useState<string>("");
@@ -78,6 +79,7 @@ export default function IDEPage() {
     closeAllTabs,
     renameTab,
     removeTab,
+    reloadTab,
   } = useEditorTabs();
 
   // ---- 批量 AST 分析 ----
@@ -254,6 +256,16 @@ export default function IDEPage() {
       return snapshot;
     },
     [restoreProjectSnapshot, closeAllTabs],
+  );
+
+  // Day 11 单文件回退：Diff 应用合并结果 = 自动快照当前内容 → 写入 VFS → 同步已打开的 Tab
+  const handleDiffApplyWrite = useCallback(
+    async (path: string, content: string, meta?: SnapshotMeta) => {
+      await writeFile(path, content, meta);
+      const tab = tabs.find((t) => t.path === path);
+      if (tab) reloadTab(path, content);
+    },
+    [writeFile, tabs, reloadTab],
   );
 
   // 导入成功后刷新项目列表 + 自动选中新导入的项目（否则文件树空白）
@@ -510,6 +522,7 @@ export default function IDEPage() {
         onListSnapshots={listProjectSnapshots}
         onDeleteSnapshot={deleteProjectSnapshot}
         onReadCurrentFile={readFile}
+        onWriteFile={handleDiffApplyWrite}
       />
 
       {/* 代码编辑器（多 Tab 模式） */}
