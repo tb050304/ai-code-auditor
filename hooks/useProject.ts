@@ -9,6 +9,7 @@ import {
   getProjectSnapshotManager,
   type ProjectSnapshot,
   type ProjectIo,
+  type SnapshotMeta,
 } from "@/lib/snapshots";
 
 export interface UseProjectReturn {
@@ -29,7 +30,11 @@ export interface UseProjectReturn {
   refreshFileTree: () => Promise<void>;
 
   // ---- 文件操作 ----
-  writeFile: (path: string, content: string) => Promise<FileNode>;
+  /**
+   * 写入文件。默认写前自动快照（source: manual-save）；
+   * 传入 snapshotMeta 可自定义来源/描述（如 Diff 合并应用、全部回退）。
+   */
+  writeFile: (path: string, content: string, snapshotMeta?: SnapshotMeta) => Promise<FileNode>;
   mkdir: (path: string) => Promise<FileNode>;
   deleteNode: (path: string) => Promise<void>;
   renameNode: (oldPath: string, newName: string) => Promise<FileNode>;
@@ -178,7 +183,7 @@ export function useProject(): UseProjectReturn {
   );
 
   const writeFile = useCallback(
-    async (path: string, content: string) => {
+    async (path: string, content: string, snapshotMeta?: SnapshotMeta) => {
       if (!activeProjectId) throw new Error("无活动项目");
       const normalized = joinPath(path);
 
@@ -186,10 +191,12 @@ export function useProject(): UseProjectReturn {
       try {
         const oldContent = await backendRef.current.readFile(activeProjectId, normalized);
         if (oldContent !== content) {
-          await getSnapshotManager().captureBeforeWrite(activeProjectId, normalized, oldContent, {
-            source: "manual-save",
-            description: "保存前自动快照",
-          });
+          await getSnapshotManager().captureBeforeWrite(
+            activeProjectId,
+            normalized,
+            oldContent,
+            snapshotMeta ?? { source: "manual-save", description: "保存前自动快照" },
+          );
         }
       } catch {
         // 文件不存在（新建）或快照存储异常：跳过快照，正常写入

@@ -6,7 +6,7 @@ import ProjectSnapshotPanel from "@/components/snapshots/ProjectSnapshotPanel";
 import type { Project, FileNode } from "@/lib/storage";
 import type { TreeNode } from "@/lib/storage/file-tree";
 import type { ImportResult } from "@/lib/storage/import";
-import type { ProjectSnapshot } from "@/lib/snapshots";
+import type { ProjectSnapshot, SnapshotMeta } from "@/lib/snapshots";
 import type { FileAnalysisResult } from "@/lib/ast/batch-types";
 import { joinPath } from "@/lib/storage/path";
 
@@ -31,6 +31,8 @@ interface ProjectSidebarProps {
   onDeleteSnapshot: (id: string) => Promise<void>;
   /** 读取当前文件内容（快照对比用） */
   onReadCurrentFile?: (path: string) => Promise<string>;
+  /** 写回文件内容（Diff 应用合并结果用，写前自动快照） */
+  onWriteFile?: (path: string, content: string, meta?: SnapshotMeta) => Promise<unknown>;
 }
 
 export default function ProjectSidebar({
@@ -52,6 +54,7 @@ export default function ProjectSidebar({
   onListSnapshots,
   onDeleteSnapshot,
   onReadCurrentFile,
+  onWriteFile,
 }: ProjectSidebarProps) {
   const [showDropzone, setShowDropzone] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
@@ -198,6 +201,7 @@ export default function ProjectSidebar({
         onListSnapshots={onListSnapshots}
         onDeleteSnapshot={onDeleteSnapshot}
         onReadCurrentFile={onReadCurrentFile}
+        onWriteFile={onWriteFile}
       />
 
       {/* 删除项目确认弹窗 */}

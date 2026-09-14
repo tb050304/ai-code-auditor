@@ -24,6 +24,9 @@ const MonacoDiffEditor = dynamic(
   },
 );
 
+/** 应用动作：逐条合并 / 全部回退（取旧版） / 全部接受（取新版） */
+export type DiffApplyAction = "merge" | "rollback-all" | "accept-all";
+
 export interface DiffViewerProps {
   open: boolean;
   onClose: () => void;
@@ -38,11 +41,12 @@ export interface DiffViewerProps {
   originalLabel?: string;
   modifiedLabel?: string;
   /**
-   * 应用合并结果回调。
-   * 提供时底部显示"应用合并结果"按钮（Day 11 的回退流程会接入）；
+   * 应用回调（Day 11 单文件回退链路）。
+   * 提供「全部回退 / 全部接受 / 应用合并结果」三个动作；
+   * 调用方负责应用前自动快照，成功后本组件自动关闭。
    * 不提供时显示"复制合并结果"，仅预览。
    */
-  onApply?: (mergedText: string) => void | Promise<void>;
+  onApply?: (mergedText: string, action: DiffApplyAction) => void | Promise<void>;
 }
 
 type Decision = "accepted" | "rejected";
@@ -205,17 +209,29 @@ export default function DiffViewer({
     diffEditor.revealLineInCenter(line);
   }, []);
 
-  const handleApply = useCallback(async () => {
-    if (!onApply || applying) return;
-    setApplying(true);
-    try {
-      await onApply(mergedText);
-    } catch (e) {
-      showMsg(`应用失败: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setApplying(false);
-    }
-  }, [onApply, applying, mergedText, showMsg]);
+  const runApply = useCallback(
+    async (text: string, action: DiffApplyAction) => {
+      if (!onApply || applying) return;
+      setApplying(true);
+      try {
+        await onApply(text, action);
+        // 应用成功后 diff 已过期，自动关闭（失败则留在弹窗内提示）
+        onClose();
+      } catch (e) {
+        showMsg(`应用失败: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setApplying(false);
+      }
+    },
+    [onApply, applying, onClose, showMsg],
+  );
+
+  const handleRollbackAll = useCallback(() => {
+    if (!confirm("确认全部回退？文件将恢复为旧版本内容。\n当前内容会自动保存为快照，可随时恢复回来。")) return;
+    runApply(original, "rollback-all");
+  }, [original, runApply]);
+
+  const handleAcceptAll = useCallback(() => runApply(modified, "accept-all"), [modified, runApply]);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -396,13 +412,32 @@ export default function DiffViewer({
               关闭
             </button>
             {onApply ? (
-              <button
-                onClick={handleApply}
-                disabled={applying || identical}
-                className="px-3 py-1.5 text-xs bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white rounded transition-colors"
-              >
-                {applying ? "应用中..." : `应用合并结果${acceptedCount > 0 ? `（${acceptedCount} 处）` : ""}`}
-              </button>
+              <>
+                <button
+                  onClick={handleRollbackAll}
+                  disabled={applying || identical}
+                  className="px-3 py-1.5 text-xs text-red-400 border border-red-700/50 hover:bg-red-500/10 disabled:opacity-40 rounded transition-colors"
+                  title="放弃当前版本的全部修改，恢复为旧版本（当前内容自动快照）"
+                >
+                  全部回退
+                </button>
+                <button
+                  onClick={handleAcceptAll}
+                  disabled={applying || identical}
+                  className="px-3 py-1.5 text-xs text-green-400 border border-green-700/50 hover:bg-green-500/10 disabled:opacity-40 rounded transition-colors"
+                  title="保留当前版本的全部修改"
+                >
+                  全部接受
+                </button>
+                <button
+                  onClick={() => runApply(mergedText, "merge")}
+                  disabled={applying || identical}
+                  className="px-3 py-1.5 text-xs bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white rounded transition-colors"
+                  title="按逐块决策应用合并结果（默认全部拒绝 = 旧版本）"
+                >
+                  {applying ? "应用中..." : `应用合并结果${acceptedCount > 0 ? `（${acceptedCount} 处）` : ""}`}
+                </button>
+              </>
             ) : (
               <button
                 onClick={handleCopy}

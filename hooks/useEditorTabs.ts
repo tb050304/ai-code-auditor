@@ -39,6 +39,8 @@ export interface UseEditorTabsReturn {
   /** 外部更新某个 tab 的内容（比如文件被重命名/删除时） */
   renameTab: (oldPath: string, newPath: string) => void;
   removeTab: (path: string) => void;
+  /** 用 VFS 最新内容刷新已打开的 Tab（文件被外部写入/回退后同步，内容与 VFS 一致视为已保存态） */
+  reloadTab: (path: string, content: string) => void;
 }
 
 export function useEditorTabs(): UseEditorTabsReturn {
@@ -201,6 +203,14 @@ export function useEditorTabs(): UseEditorTabsReturn {
     [activeTabPath],
   );
 
+  const reloadTab = useCallback((path: string, content: string) => {
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.path === path ? { ...t, content, originalContent: content } : t,
+      ),
+    );
+  }, []);
+
   const activeTab = tabs.find((t) => t.path === activeTabPath) ?? null;
 
   return {
@@ -217,5 +227,6 @@ export function useEditorTabs(): UseEditorTabsReturn {
     closeAllTabs,
     renameTab,
     removeTab,
+    reloadTab,
   };
 }

@@ -1,9 +1,9 @@
 "use client";
 import React, { useState, useCallback, useEffect } from "react";
-import type { ProjectSnapshot, ProjectSnapshotSource } from "@/lib/snapshots";
+import type { ProjectSnapshot, ProjectSnapshotSource, SnapshotMeta } from "@/lib/snapshots";
 import { formatSize } from "@/lib/storage/import";
 import { inferMonacoLanguage } from "@/lib/monaco-lang";
-import DiffViewer from "@/components/diff/DiffViewer";
+import DiffViewer, { type DiffApplyAction } from "@/components/diff/DiffViewer";
 
 interface ProjectSnapshotPanelProps {
   open: boolean;
@@ -16,6 +16,8 @@ interface ProjectSnapshotPanelProps {
   onDeleteSnapshot: (id: string) => Promise<void>;
   /** 读取当前 VFS 中文件内容，用于快照版本 vs 当前版本的对比；文件已删时抛错 */
   onReadCurrentFile?: (path: string) => Promise<string>;
+  /** 应用合并结果回写 VFS（Day 11 回退链路；写前自动快照由实现方保证） */
+  onWriteFile?: (path: string, content: string, meta?: SnapshotMeta) => Promise<unknown>;
 }
 
 /** diff 弹窗所需的数据 */
@@ -23,6 +25,8 @@ interface DiffTarget {
   path: string;
   snapshotContent: string;
   currentContent: string;
+  /** 当前版本中文件已不存在（被删除）：只可预览，禁用应用回写 */
+  missing: boolean;
 }
 
 const SOURCE_BADGE: Record<ProjectSnapshotSource, { label: string; cls: string }> = {
@@ -53,6 +57,7 @@ export default function ProjectSnapshotPanel({
   onListSnapshots,
   onDeleteSnapshot,
   onReadCurrentFile,
+  onWriteFile,
 }: ProjectSnapshotPanelProps) {
   const [snapshots, setSnapshots] = useState<ProjectSnapshot[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -158,20 +163,39 @@ export default function ProjectSnapshotPanel({
       const snapshotContent =
         snap.files.find((f) => f.path === filePath)?.content ?? "";
       let currentContent = "";
+      let missing = false;
       setDiffLoadingPath(filePath);
       try {
         currentContent = onReadCurrentFile
           ? await onReadCurrentFile(filePath)
           : "";
       } catch {
-        // 文件已被删除 → 当前内容按空处理（diff 显示为删除状态）
+        // 文件已被删除 → 当前内容按空处理（diff 显示为删除状态），且禁止应用回写
+        missing = true;
         currentContent = "";
       } finally {
         setDiffLoadingPath(null);
       }
-      setDiffTarget({ path: filePath, snapshotContent, currentContent });
+      setDiffTarget({ path: filePath, snapshotContent, currentContent, missing });
     },
     [onReadCurrentFile],
+  );
+
+  // Day 11 回退链路：应用合并结果 = 自动快照当前内容 → 写回 VFS → 关闭 diff
+  const handleApplyMerge = useCallback(
+    async (mergedText: string, action: DiffApplyAction) => {
+      if (!diffTarget || !onWriteFile) return;
+      const isRollback = action === "rollback-all";
+      await onWriteFile(diffTarget.path, mergedText, {
+        source: isRollback ? "rollback" : "diff-apply",
+        description: isRollback ? "Diff 全部回退前自动快照" : "Diff 合并应用前自动快照",
+      });
+      setDiffTarget(null);
+      showMsg(
+        isRollback ? "✓ 已回退到快照版本，回退前内容已自动快照" : "✓ 合并结果已写入，应用前内容已自动快照",
+      );
+    },
+    [diffTarget, onWriteFile, showMsg],
   );
 
   if (!open) return null;
@@ -340,22 +364,27 @@ export default function ProjectSnapshotPanel({
         {/* 底部说明 */}
         <div className="px-4 py-2 border-t border-slate-800 text-[11px] text-slate-600">
           {comparingSnap
-            ? "左侧为快照版本，右侧为当前版本；逐块接受/拒绝后可复制合并结果。"
+            ? "左侧为快照版本，右侧为当前版本；可全部回退 / 全部接受 / 逐块决策后应用合并结果，应用前当前内容自动快照。已删除的文件仅可预览。"
             : "恢复 = 项目回到快照时的状态；恢复前当前状态自动备份，不会丢失。"}
         </div>
       </div>
 
-      {/* Diff 对比弹窗（快照版本 vs 当前版本；应用回写在 Day 11 接入） */}
+      {/* Diff 对比弹窗：快照版本 vs 当前版本；应用 = 自动快照当前内容后回写 */}
       {diffTarget && (
         <DiffViewer
           open={!!diffTarget}
           onClose={() => setDiffTarget(null)}
-          title={diffTarget.path.slice(1)}
+          title={
+            diffTarget.missing
+              ? `${diffTarget.path.slice(1)}（当前版本已删除，仅可预览）`
+              : diffTarget.path.slice(1)
+          }
           original={diffTarget.snapshotContent}
           modified={diffTarget.currentContent}
           language={inferMonacoLanguage(diffTarget.path)}
           originalLabel="快照版本"
           modifiedLabel="当前版本"
+          onApply={diffTarget.missing ? undefined : handleApplyMerge}
         />
       )}
     </div>
