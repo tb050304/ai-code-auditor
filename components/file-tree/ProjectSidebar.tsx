@@ -3,10 +3,11 @@ import React, { useState, useCallback } from "react";
 import FileDropzone from "@/components/file-dropzone/FileDropzone";
 import FileTree from "@/components/file-tree/FileTree";
 import ProjectSnapshotPanel from "@/components/snapshots/ProjectSnapshotPanel";
+import FileHistoryPanel, { type FileHistoryData } from "@/components/snapshots/FileHistoryPanel";
 import type { Project, FileNode } from "@/lib/storage";
 import type { TreeNode } from "@/lib/storage/file-tree";
 import type { ImportResult } from "@/lib/storage/import";
-import type { ProjectSnapshot, SnapshotMeta } from "@/lib/snapshots";
+import type { ProjectSnapshot, SnapshotMeta, FileSnapshot } from "@/lib/snapshots";
 import type { FileAnalysisResult } from "@/lib/ast/batch-types";
 import { joinPath } from "@/lib/storage/path";
 
@@ -33,6 +34,11 @@ interface ProjectSidebarProps {
   onReadCurrentFile?: (path: string) => Promise<string>;
   /** 写回文件内容（Diff 应用合并结果用，写前自动快照） */
   onWriteFile?: (path: string, content: string, meta?: SnapshotMeta) => Promise<unknown>;
+  // ---- 文件级快照（Day 12） ----
+  /** 列出某文件的历史快照（新 → 旧） */
+  onListFileHistory?: (path: string) => Promise<FileSnapshot[]>;
+  /** 回滚某文件到指定快照（回滚前自动快照当前内容） */
+  onRestoreFileSnapshot?: (snapshotId: string) => Promise<FileSnapshot>;
 }
 
 export default function ProjectSidebar({
@@ -55,13 +61,52 @@ export default function ProjectSidebar({
   onDeleteSnapshot,
   onReadCurrentFile,
   onWriteFile,
+  onListFileHistory,
+  onRestoreFileSnapshot,
 }: ProjectSidebarProps) {
   const [showDropzone, setShowDropzone] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [showSnapshotPanel, setShowSnapshotPanel] = useState(false);
+  /** 正在查看文件历史的路径（null = 关闭） */
+  const [historyPath, setHistoryPath] = useState<string | null>(null);
+  /** 文件历史数据（null = 加载中）；在打开/刷新等事件回调中加载，避免 effect 内 setState */
+  const [historyData, setHistoryData] = useState<FileHistoryData | null>(null);
 
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
+
+  // 加载某文件的历史时间线（事件回调中调用；文件已删除时 current 记为 null）
+  const loadHistory = useCallback(
+    async (path: string) => {
+      if (!onListFileHistory) return;
+      try {
+        const [list, current] = await Promise.all([
+          onListFileHistory(path),
+          onReadCurrentFile
+            ? onReadCurrentFile(path).then(
+                (content) => content,
+                () => null,
+              )
+            : Promise.resolve<string | null>(null),
+        ]);
+        setHistoryData({ snaps: list, current });
+      } catch (e) {
+        console.error("加载文件历史失败:", e);
+        setHistoryData({ snaps: [], current: null });
+      }
+    },
+    [onListFileHistory, onReadCurrentFile],
+  );
+
+  // 右键「历史记录」：打开面板并加载
+  const handleShowHistory = useCallback(
+    (path: string) => {
+      setHistoryPath(path);
+      setHistoryData(null);
+      loadHistory(path);
+    },
+    [loadHistory],
+  );
 
   const handleImported = (result: ImportResult) => {
     onImported(result);
@@ -132,7 +177,11 @@ export default function ProjectSidebar({
                     group flex items-center justify-between px-3 py-2 cursor-pointer text-sm
                     ${activeProjectId === p.id ? "bg-cyan-500/10 text-cyan-300 border-l-2 border-cyan-500" : "hover:bg-slate-800/50"}
                   `}
-                  onClick={() => onSelectProject(p.id)}
+                  onClick={() => {
+                    // 切换项目时关闭文件历史面板，避免展示上一个项目的过期数据
+                    setHistoryPath(null);
+                    onSelectProject(p.id);
+                  }}
                 >
                   <span className="truncate">📂 {p.name}</span>
                   <button
@@ -166,6 +215,7 @@ export default function ProjectSidebar({
                 onCreateDir={onCreateDir}
                 onDelete={onDeleteNode}
                 onRename={onRenameNode}
+                onShowHistory={handleShowHistory}
                 defaultExpanded={new Set(["/"])}
               />
             </div>
@@ -203,6 +253,19 @@ export default function ProjectSidebar({
         onReadCurrentFile={onReadCurrentFile}
         onWriteFile={onWriteFile}
       />
+
+      {/* 文件历史时间线面板（Day 12）：数据由本组件在事件回调中加载 */}
+      {onListFileHistory && onRestoreFileSnapshot && (
+        <FileHistoryPanel
+          open={historyPath !== null}
+          path={historyPath}
+          data={historyData}
+          onClose={() => setHistoryPath(null)}
+          onRestoreSnapshot={onRestoreFileSnapshot}
+          onWriteFile={onWriteFile}
+          onReload={loadHistory}
+        />
+      )}
 
       {/* 删除项目确认弹窗 */}
       {showDeleteConfirm && (

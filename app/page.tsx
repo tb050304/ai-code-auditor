@@ -58,6 +58,8 @@ export default function IDEPage() {
     deleteNode,
     renameNode,
     readFile,
+    listFileHistory,
+    restoreFileSnapshot,
     createProjectSnapshot,
     restoreProjectSnapshot,
     listProjectSnapshots,
@@ -266,6 +268,17 @@ export default function IDEPage() {
       if (tab) reloadTab(path, content);
     },
     [writeFile, tabs, reloadTab],
+  );
+
+  // Day 12 文件历史回滚：回滚到指定快照 → 同步已打开的 Tab（目标内容来自快照记录）
+  const handleRestoreFileSnapshot = useCallback(
+    async (snapshotId: string) => {
+      const snap = await restoreFileSnapshot(snapshotId);
+      const tab = tabs.find((t) => t.path === snap.path);
+      if (tab) reloadTab(snap.path, snap.content);
+      return snap;
+    },
+    [restoreFileSnapshot, tabs, reloadTab],
   );
 
   // 导入成功后刷新项目列表 + 自动选中新导入的项目（否则文件树空白）
@@ -523,6 +536,8 @@ export default function IDEPage() {
         onDeleteSnapshot={deleteProjectSnapshot}
         onReadCurrentFile={readFile}
         onWriteFile={handleDiffApplyWrite}
+        onListFileHistory={listFileHistory}
+        onRestoreFileSnapshot={handleRestoreFileSnapshot}
       />
 
       {/* 代码编辑器（多 Tab 模式） */}

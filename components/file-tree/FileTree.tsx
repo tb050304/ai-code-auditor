@@ -14,6 +14,8 @@ export interface FileTreeActions {
   onCreateDir?: (parentDir: string, name: string) => void;
   onDelete?: (path: string, type: "file" | "directory") => void;
   onRename?: (oldPath: string, newName: string) => void;
+  /** 查看文件修改历史（仅文件，Day 12 时间线侧边栏） */
+  onShowHistory?: (path: string) => void;
   /** 加载子目录内容（懒加载用），可选。如果不提供则认为树已经完整 */
   onLoadChildren?: (path: string) => Promise<void>;
 }
@@ -42,6 +44,7 @@ export default function FileTree({
   onCreateDir,
   onDelete,
   onRename,
+  onShowHistory,
   onLoadChildren,
   fileResults,
 }: FileTreeProps) {
@@ -119,6 +122,14 @@ export default function FileTree({
       }
 
       if (path !== "/") {
+        if (type === "file") {
+          items.push({
+            key: "history",
+            label: "历史记录",
+            icon: "🕘",
+            onClick: () => onShowHistory?.(path),
+          });
+        }
         items.push({
           key: "rename",
           label: "重命名",
@@ -141,7 +152,7 @@ export default function FileTree({
 
       return items;
     },
-    [onDelete],
+    [onDelete, onShowHistory],
   );
 
   const handleEditingSubmit = useCallback(
