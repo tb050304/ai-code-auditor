@@ -10,6 +10,7 @@ import {
   type ProjectSnapshot,
   type ProjectIo,
   type SnapshotMeta,
+  type FileSnapshot,
 } from "@/lib/snapshots";
 
 export interface UseProjectReturn {
@@ -39,6 +40,16 @@ export interface UseProjectReturn {
   deleteNode: (path: string) => Promise<void>;
   renameNode: (oldPath: string, newName: string) => Promise<FileNode>;
   readFile: (path: string) => Promise<string>;
+
+  // ---- 文件级快照 ----
+  /** 列出某文件的历史快照（新 → 旧；不含 VFS 当前内容） */
+  listFileHistory: (path: string) => Promise<FileSnapshot[]>;
+  /**
+   * 回滚某文件到指定快照。
+   * 回滚前自动把当前内容存为 rollback 快照（内容相同则不动作）；
+   * 文件已被删除时直接恢复该文件（无当前状态可存）。
+   */
+  restoreFileSnapshot: (snapshotId: string) => Promise<FileSnapshot>;
 
   // ---- 项目级快照 ----
   /** 给当前项目打版本标签 */
@@ -258,6 +269,53 @@ export function useProject(): UseProjectReturn {
     [activeProjectId],
   );
 
+  // ---- 文件级快照 ----
+
+  const listFileHistory = useCallback(
+    async (path: string) => {
+      if (!activeProjectId) return [];
+      const normalized = joinPath(path);
+      // store 升序（旧 → 新），时间线展示用新 → 旧
+      const list = await getSnapshotManager().listHistory(activeProjectId, normalized);
+      return [...list].reverse();
+    },
+    [activeProjectId],
+  );
+
+  const restoreFileSnapshot = useCallback(
+    async (snapshotId: string) => {
+      if (!activeProjectId) throw new Error("无活动项目");
+      const manager = getSnapshotManager();
+      const target = await manager.getSnapshot(snapshotId);
+      if (!target) throw new Error("快照不存在");
+
+      // 读取当前内容；文件已被删除时视为无当前状态（回滚 = 恢复文件）
+      let current: string | null = null;
+      try {
+        current = await backendRef.current.readFile(activeProjectId, target.path);
+      } catch {
+        current = null;
+      }
+
+      // 内容相同无需回滚
+      if (current === target.content) return target;
+
+      // 回滚也是一次修改：先把当前状态存起来，用户可以再滚回来
+      if (current !== null) {
+        await manager.captureBeforeWrite(activeProjectId, target.path, current, {
+          source: "rollback",
+          description: "回滚前自动快照",
+        });
+      }
+
+      // 直接写 VFS（不走 useProject.writeFile，避免再触发一次 manual-save 快照）
+      await backendRef.current.writeFile(activeProjectId, target.path, target.content);
+      await refreshFileTree();
+      return target;
+    },
+    [activeProjectId, refreshFileTree],
+  );
+
   // ---- 项目级快照 ----
 
   /** 项目快照管理器访问 VFS 的 io 适配层 */
@@ -328,6 +386,8 @@ export function useProject(): UseProjectReturn {
   deleteNode,
   renameNode,
   readFile,
+  listFileHistory,
+  restoreFileSnapshot,
   createProjectSnapshot,
   restoreProjectSnapshot,
   listProjectSnapshots,
