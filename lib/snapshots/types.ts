@@ -23,10 +23,23 @@ export interface FileSnapshot {
   projectId: string;
   /** 文件绝对路径（规范化，以 / 开头） */
   path: string;
-  /** 快照时的完整文件内容（Day 13 计划引入增量编码） */
+  /** 快照时的完整文件内容（encoding=full 时有值；delta 时为空串，内容由 patch 还原） */
   content: string;
-  /** 内容编码方式，当前恒为 full；Day 13 增量存储时扩展 */
-  encoding: "full";
+  /**
+   * 内容编码方式：
+   * - full：完整内容
+   * - delta：相对 baseSnapshotId（时间线上更早的相邻快照）的行级补丁，
+   *   还原时沿 chainLength 链向上找到 full 检查点逐级打补丁
+   */
+  encoding: "full" | "delta";
+  /** delta 编码：基准快照 ID（必须是同文件、时间线上更早的相邻存活快照） */
+  baseSnapshotId?: string;
+  /** delta 编码：序列化补丁（JSON，见 lib/snapshots/encoding.ts） */
+  patch?: string;
+  /** 距最近 full 检查点的链长：full=0，delta 逐级 +1；用于决定下一条是否做检查点 */
+  chainLength?: number;
+  /** 实际占用存储的字节近似值（full=内容长度，delta=补丁长度），用于容量展示 */
+  storedSize?: number;
   /** 快照时间戳（ms） */
   createdAt: number;
   /** 快照来源 */

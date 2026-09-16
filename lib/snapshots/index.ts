@@ -6,6 +6,20 @@ export type {
 } from "./types";
 export { MemorySnapshotStore } from "./memory-store";
 export { IdbSnapshotStore } from "./idb-store";
+export { DeltaSnapshotStore } from "./delta-store";
+export {
+  DELTA_MIN_FULL_LENGTH,
+  DELTA_MAX_CHAIN,
+  DELTA_SIZE_RATIO,
+  LCS_MAX_CELLS,
+  createPatch,
+  applyPatch,
+  serializePatch,
+  deserializePatch,
+  decideEncoding,
+  type SnapshotPatch,
+  type PatchOp,
+} from "./encoding";
 export {
   SnapshotManager,
   DEFAULT_MAX_SNAPSHOTS_PER_FILE,
@@ -30,6 +44,7 @@ export {
 import type { SnapshotStore } from "./types";
 import { MemorySnapshotStore } from "./memory-store";
 import { IdbSnapshotStore } from "./idb-store";
+import { DeltaSnapshotStore } from "./delta-store";
 import { SnapshotManager } from "./history";
 import type { ProjectSnapshotStore } from "./project-types";
 import { MemoryProjectSnapshotStore } from "./project-memory-store";
@@ -48,7 +63,10 @@ export function getDefaultSnapshotStore(): SnapshotStore {
   const isBrowser =
     typeof window !== "undefined" && typeof indexedDB !== "undefined";
 
-  sharedStore = isBrowser ? new IdbSnapshotStore() : new MemorySnapshotStore();
+  // 文件快照默认启用增量编码装饰器（Day 13）：底层仍是 IDB / 内存，上层透明
+  sharedStore = isBrowser
+    ? new DeltaSnapshotStore(new IdbSnapshotStore())
+    : new DeltaSnapshotStore(new MemorySnapshotStore());
   return sharedStore;
 }
 

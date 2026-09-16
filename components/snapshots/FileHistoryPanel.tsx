@@ -196,7 +196,14 @@ export default function FileHistoryPanel({
                               </span>
                             </div>
                             <div className="text-[11px] text-slate-500 mt-0.5 truncate">
-                              {formatSize(snap.size)}
+                              {snap.encoding === "delta" && snap.storedSize !== undefined ? (
+                                <span title={`增量补丁存储；全量内容约 ${formatSize(snap.size)}`}>
+                                  <span className="text-sky-400">增量 {formatSize(snap.storedSize)}</span>
+                                  {` · 全量 ${formatSize(snap.size)}`}
+                                </span>
+                              ) : (
+                                formatSize(snap.size)
+                              )}
                               {snap.description ? ` · ${snap.description}` : ""}
                             </div>
                           </div>
