@@ -51,6 +51,32 @@ export interface DiffViewerProps {
 
 type Decision = "accepted" | "rejected";
 
+/** chunk 决策行高亮装饰（Monaco decoration 的结构子集） */
+interface ChunkDecoration {
+  range: {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  };
+  options: {
+    isWholeLine: boolean;
+    className: string;
+  };
+}
+
+/** Diff 两侧文本编辑器实际用到的能力 */
+interface DiffSideEditor {
+  deltaDecorations(oldDecorations: string[], newDecorations: ChunkDecoration[]): string[];
+}
+
+/** Monaco diff editor 实际用到的能力，避免把 ref 标成 any */
+interface MonacoDiffEditorLike {
+  getOriginalEditor(): DiffSideEditor;
+  getModifiedEditor(): DiffSideEditor;
+  revealLineInCenter(lineNumber: number): void;
+}
+
 export default function DiffViewer({
   open,
   onClose,
@@ -62,7 +88,7 @@ export default function DiffViewer({
   modifiedLabel = "新版本",
   onApply,
 }: DiffViewerProps) {
-  const diffEditorRef = useRef<any>(null);
+  const diffEditorRef = useRef<MonacoDiffEditorLike | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const originalDecoRef = useRef<string[]>([]);
   const modifiedDecoRef = useRef<string[]>([]);
@@ -78,14 +104,8 @@ export default function DiffViewer({
   const chunks = useMemo(() => computeChunks(oldLines, newLines), [oldLines, newLines]);
   const changes = useMemo(() => getChangeChunks(chunks), [chunks]);
 
-  // 弹窗打开时重置状态
-  useEffect(() => {
-    if (open) {
-      setDecisions({});
-      setInline(false);
-      setMessage("");
-    }
-  }, [open, original, modified]);
+  // 注意：打开/切换对比时的状态重置依赖父组件以 key 控制全新挂载
+  // （本组件总是条件渲染），不在 effect 中同步 setState。
 
   const acceptedIds = useMemo(() => {
     const set = new Set<number>();
@@ -127,8 +147,8 @@ export default function DiffViewer({
     const modEditor = diffEditor.getModifiedEditor();
     if (!origEditor || !modEditor) return;
 
-    const origDecos: any[] = [];
-    const modDecos: any[] = [];
+    const origDecos: ChunkDecoration[] = [];
+    const modDecos: ChunkDecoration[] = [];
 
     for (const chunk of changes) {
       const decision: Decision =
@@ -163,7 +183,7 @@ export default function DiffViewer({
     modifiedDecoRef.current = modEditor.deltaDecorations(modifiedDecoRef.current, modDecos);
   }, [decisions, changes]);
 
-  const handleMount = useCallback((diffEditor: any, monaco: Monaco) => {
+  const handleMount = useCallback((diffEditor: MonacoDiffEditorLike, monaco: Monaco) => {
     diffEditorRef.current = diffEditor;
     monacoRef.current = monaco;
 

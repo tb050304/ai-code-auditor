@@ -3,7 +3,6 @@ import {
   summarizeIssues,
   buildTreeIssueMap,
   groupIssuesByFile,
-  type NodeIssueSummary,
 } from "@/lib/ast/issue-aggregate";
 import type { TreeNode } from "@/lib/storage/file-tree";
 import type { FileAnalysisResult } from "@/lib/ast/batch-types";

@@ -48,11 +48,11 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
       path: task.path,
       result: fileResult,
     } as WorkerMessage);
-  } catch (err: any) {
+  } catch (err) {
     self.postMessage({
       type: "error",
       path: task.path,
-      error: err?.message ?? String(err),
+      error: err instanceof Error ? err.message : String(err),
     } as WorkerMessage);
   }
 };

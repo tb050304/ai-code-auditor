@@ -61,9 +61,9 @@ export function useASTAnalysis() {
       } else {
         throw new Error(data.error || "分析失败");
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error("AST analysis error:", err);
-      setError(err.message || "分析失败");
+      setError(err instanceof Error ? err.message : "分析失败");
       setAnalysisResult(null);
     } finally {
       setIsAnalyzing(false);
