@@ -1,6 +1,6 @@
 "use client";
-import { useState, useCallback, useRef } from "react";
-import { extname, basename } from "@/lib/storage/path";
+import { useState, useCallback } from "react";
+import { basename } from "@/lib/storage/path";
 import { inferMonacoLanguage } from "@/lib/monaco-lang";
 
 export interface EditorTab {

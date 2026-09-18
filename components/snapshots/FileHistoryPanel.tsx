@@ -243,6 +243,7 @@ export default function FileHistoryPanel({
       {/* Diff 弹窗：快照版本 vs 当前版本 */}
       {diffSnapshot && (
         <DiffViewer
+          key={`${path}:${diffSnapshot.id}`}
           open={!!diffSnapshot}
           onClose={() => setDiffSnapshot(null)}
           title={`${path.slice(1)} · ${formatTime(diffSnapshot.createdAt)}`}

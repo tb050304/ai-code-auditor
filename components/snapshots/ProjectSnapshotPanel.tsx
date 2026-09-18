@@ -60,7 +60,7 @@ export default function ProjectSnapshotPanel({
   onWriteFile,
 }: ProjectSnapshotPanelProps) {
   const [snapshots, setSnapshots] = useState<ProjectSnapshot[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [isWorking, setIsWorking] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -83,16 +83,25 @@ export default function ProjectSnapshotPanel({
     }
   }, [hasProject, onListSnapshots]);
 
-  // 打开时加载一次
+  // 挂载即打开：加载一次快照列表。
+  // setState 都发生在 await 之后（非同步），关闭时面板直接卸载，
+  // 子视图状态随卸载重置，无需在 effect 中同步清空。
   useEffect(() => {
-    if (open) {
-      refresh();
-    } else {
-      // 关闭时退出文件对比子视图
-      setComparingSnap(null);
-      setDiffTarget(null);
-    }
-  }, [open, refresh]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await onListSnapshots();
+        if (!cancelled) setSnapshots(list);
+      } catch (e) {
+        console.error("加载快照列表失败:", e);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [onListSnapshots]);
 
   const showMsg = useCallback((text: string) => {
     setMessage(text);
@@ -372,6 +381,7 @@ export default function ProjectSnapshotPanel({
       {/* Diff 对比弹窗：快照版本 vs 当前版本；应用 = 自动快照当前内容后回写 */}
       {diffTarget && (
         <DiffViewer
+          key={`${diffTarget.path}:${comparingSnap?.id ?? ""}`}
           open={!!diffTarget}
           onClose={() => setDiffTarget(null)}
           title={

@@ -1,5 +1,5 @@
-import { normalizePath, joinPath } from "./path";
-import type { VfsBackend, FileEntry } from "./types";
+import { normalizePath } from "./path";
+import type { VfsBackend } from "./types";
 
 /** 默认忽略的目录名（匹配整个目录段） */
 export const DEFAULT_IGNORE_DIRS = new Set([

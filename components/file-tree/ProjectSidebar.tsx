@@ -4,12 +4,11 @@ import FileDropzone from "@/components/file-dropzone/FileDropzone";
 import FileTree from "@/components/file-tree/FileTree";
 import ProjectSnapshotPanel from "@/components/snapshots/ProjectSnapshotPanel";
 import FileHistoryPanel, { type FileHistoryData } from "@/components/snapshots/FileHistoryPanel";
-import type { Project, FileNode } from "@/lib/storage";
+import type { Project } from "@/lib/storage";
 import type { TreeNode } from "@/lib/storage/file-tree";
 import type { ImportResult } from "@/lib/storage/import";
 import type { ProjectSnapshot, SnapshotMeta, FileSnapshot } from "@/lib/snapshots";
 import type { FileAnalysisResult } from "@/lib/ast/batch-types";
-import { joinPath } from "@/lib/storage/path";
 
 interface ProjectSidebarProps {
   projects: Project[];
@@ -228,7 +227,7 @@ export default function ProjectSidebar({
 
         {!activeProject && projects.length === 0 && !showDropzone && (
           <div className="p-4 text-xs text-slate-500 text-center">
-            还没有项目，点击上方"导入"开始
+            还没有项目，点击上方「导入」开始
           </div>
         )}
       </div>
@@ -241,18 +240,20 @@ export default function ProjectSidebar({
         </div>
       )}
 
-      {/* 项目快照面板 */}
-      <ProjectSnapshotPanel
-        open={showSnapshotPanel}
-        onClose={() => setShowSnapshotPanel(false)}
-        hasProject={!!activeProjectId}
-        onCreateSnapshot={onCreateSnapshot}
-        onRestoreSnapshot={onRestoreSnapshot}
-        onListSnapshots={onListSnapshots}
-        onDeleteSnapshot={onDeleteSnapshot}
-        onReadCurrentFile={onReadCurrentFile}
-        onWriteFile={onWriteFile}
-      />
+      {/* 项目快照面板：打开时才挂载，关闭即卸载，内部子视图状态天然重置 */}
+      {showSnapshotPanel && (
+        <ProjectSnapshotPanel
+          open
+          onClose={() => setShowSnapshotPanel(false)}
+          hasProject={!!activeProjectId}
+          onCreateSnapshot={onCreateSnapshot}
+          onRestoreSnapshot={onRestoreSnapshot}
+          onListSnapshots={onListSnapshots}
+          onDeleteSnapshot={onDeleteSnapshot}
+          onReadCurrentFile={onReadCurrentFile}
+          onWriteFile={onWriteFile}
+        />
+      )}
 
       {/* 文件历史时间线面板（Day 12）：数据由本组件在事件回调中加载 */}
       {onListFileHistory && onRestoreFileSnapshot && (

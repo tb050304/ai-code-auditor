@@ -69,18 +69,20 @@ export function useProject(): UseProjectReturn {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
-  const [fileTree, setFileTree] = useState<TreeNode | null>(null);
+  // 文件树按项目打标存储：切换项目后，旧项目的树不会被误渲染
+  const [treeState, setTreeState] = useState<{ projectId: string; tree: TreeNode | null } | null>(null);
   const backendRef = useRef(getDefaultBackend());
+  // 仅暴露当前项目的树；项目为空或树属于其他项目时派生为 null（无需 effect 同步清空）
+  const fileTree = activeProjectId && treeState?.projectId === activeProjectId ? treeState.tree : null;
 
   // 刷新单个项目的文件树
   const loadFileTree = useCallback(async (projectId: string) => {
     try {
       const allFiles = await backendRef.current.listAllFiles(projectId);
-      const tree = buildTree(allFiles);
-      setFileTree(tree);
+      setTreeState({ projectId, tree: buildTree(allFiles) });
     } catch (e) {
       console.error("加载文件树失败:", e);
-      setFileTree(null);
+      setTreeState({ projectId, tree: null });
     }
   }, []);
 
@@ -109,18 +111,14 @@ export function useProject(): UseProjectReturn {
     };
   }, []);
 
-  // 当 activeProject 变化时，加载完整文件树
+  // 当 activeProject 变化时，加载完整文件树（无项目时 fileTree 派生为 null）
   useEffect(() => {
-    if (!activeProjectId) {
-      setFileTree(null);
-      return;
-    }
+    if (!activeProjectId) return;
     let cancelled = false;
     (async () => {
       const allFiles = await backendRef.current.listAllFiles(activeProjectId);
       if (cancelled) return;
-      const tree = buildTree(allFiles);
-      setFileTree(tree);
+      setTreeState({ projectId: activeProjectId, tree: buildTree(allFiles) });
     })();
     return () => {
       cancelled = true;

@@ -135,7 +135,6 @@ export default function TabBar({
           x={contextMenu.x}
           y={contextMenu.y}
           tabPath={contextMenu.path}
-          tabName={tabs.find((t) => t.path === contextMenu.path)?.name ?? ""}
           isDirty={
             (() => {
               const t = tabs.find((tab) => tab.path === contextMenu.path);
@@ -175,7 +174,6 @@ interface TabContextMenuProps {
   x: number;
   y: number;
   tabPath: string;
-  tabName: string;
   isDirty: boolean;
   onClose: () => void;
   onCloseOthers: () => void;
@@ -184,10 +182,17 @@ interface TabContextMenuProps {
   onCloseMenu: () => void;
 }
 
+interface TabMenuItem {
+  key: string;
+  label: string;
+  icon: string;
+  onClick: () => void;
+  divider?: boolean;
+}
+
 function TabContextMenu({
   x,
   y,
-  tabName,
   isDirty,
   onClose,
   onCloseOthers,
@@ -225,7 +230,7 @@ function TabContextMenu({
     };
   }, [onCloseMenu]);
 
-  const items = [
+  const items: TabMenuItem[] = [
     {
       key: "close",
       label: "关闭标签",
@@ -253,7 +258,7 @@ function TabContextMenu({
       icon: "💾",
       onClick: onSave,
     });
-    items.push({ key: "div", label: "", icon: "", onClick: () => {}, divider: true } as any);
+    items.push({ key: "div", label: "", icon: "", onClick: () => {}, divider: true });
   }
 
   return (
@@ -262,7 +267,7 @@ function TabContextMenu({
       className="fixed z-[100] min-w-[160px] bg-slate-800 border border-slate-700 rounded-md shadow-xl py-1 text-sm text-slate-200"
       style={{ left: adjX, top: adjY }}
     >
-      {items.map((item: any) =>
+      {items.map((item) =>
         item.divider ? (
           <div key={item.key} className="my-1 border-t border-slate-700" />
         ) : (

@@ -103,10 +103,10 @@ export function parseCode(code: string, sourceType: "module" | "script" = "modul
       ast,
       lineCount,
     };
-  } catch (error: any) {
+  } catch (error) {
     return {
       success: false,
-      error: error.message || "解析失败",
+      error: error instanceof Error ? error.message : "解析失败",
       lineCount: code.split("\n").length,
     };
   }
@@ -150,7 +150,7 @@ interface Rule {
   severity: "error" | "warning" | "info";
   description: string;
   suggestion: string;
-  check: (path: NodePath<any>, code: string) => Issue | null;
+  check: (path: NodePath, code: string) => Issue | null;
 }
 
 /**
@@ -623,7 +623,7 @@ const ruleNoMagicNumber: Rule = {
       // 检查是否在比较操作或赋值中使用（排除索引使用）
       if (parentNode && (
         (t.isBinaryExpression(parentNode) && parentNode.operator !== "+" && parentNode.operator !== "-") ||
-        (t.isAssignmentExpression(parentNode) && !t.isArrayExpression(path.parentPath?.parent as any))
+        (t.isAssignmentExpression(parentNode) && !t.isArrayExpression(path.parentPath?.parent))
       )) {
         const value = path.node.value;
         // 排除 0, 1, -1 等常见值，以及小数
@@ -695,7 +695,7 @@ const ruleNoHardcodedEmail: Rule = {
   severity: "warning",
   description: "代码中包含硬编码的邮箱地址，可能被用于垃圾邮件或钓鱼攻击",
   suggestion: "使用环境变量或配置文件存储邮箱地址",
-  check: (path) => {
+  check: () => {
     // 这个规则在 analyzeCode 中统一处理
     return null;
   },
@@ -711,7 +711,7 @@ const ruleNoHardcodedPhone: Rule = {
   severity: "warning",
   description: "代码中包含硬编码的电话号码，可能被用于营销或诈骗",
   suggestion: "使用环境变量或配置文件存储电话号码",
-  check: (path) => {
+  check: () => {
     // 这个规则在 analyzeCode 中统一处理
     return null;
   },
@@ -727,7 +727,7 @@ const ruleNoSuspiciousComment: Rule = {
   severity: "warning",
   description: "检测代码中包含的可疑关键词，可能存在安全风险或隐藏的后门",
   suggestion: "检查注释内容，确保没有泄露敏感信息或隐藏恶意代码",
-  check: (path) => {
+  check: () => {
     // 这个规则在 analyzeCode 中统一处理
     return null;
   },
@@ -743,7 +743,7 @@ const ruleNoTodoComment: Rule = {
   severity: "info",
   description: "代码中包含未完成的 TODO 或 FIXME 注释",
   suggestion: "完成注释中提到的任务，或使用项目管理工具跟踪",
-  check: (path) => {
+  check: () => {
     // 这个规则在 analyzeCode 中统一处理
     return null;
   },
@@ -916,7 +916,7 @@ export function analyzeCode(code: string, filename: string = "code.js"): Analysi
             issues.push(issue);
             break;
           }
-        } catch (e) {
+        } catch {
           // 单个规则出错不影响整体分析
         }
       }
@@ -1006,9 +1006,11 @@ export function generateReport(result: AnalysisResult): string {
   return report;
 }
 
-export default {
+const astApi = {
   parseCode,
   analyzeCode,
   generateReport,
   types: t,
 };
+
+export default astApi;

@@ -4,7 +4,7 @@ import ContextMenu from "./ContextMenu";
 import type { ContextMenuItem } from "./ContextMenu";
 import type { TreeNode } from "@/lib/storage/file-tree";
 import { getFileCategory, FILE_CATEGORY_COLORS, FILE_CATEGORY_ICONS } from "@/lib/storage/file-tree";
-import { basename, dirname, joinPath } from "@/lib/storage/path";
+import { basename, dirname } from "@/lib/storage/path";
 import { buildTreeIssueMap, type NodeIssueSummary } from "@/lib/ast/issue-aggregate";
 import type { FileAnalysisResult } from "@/lib/ast/batch-types";
 
@@ -165,7 +165,6 @@ export default function FileTree({
       }
 
       if (editing.mode === "rename") {
-        const parent = dirname(editing.path);
         if (trimmed !== basename(editing.path)) {
           onRename?.(editing.path, trimmed);
         }
@@ -184,25 +183,27 @@ export default function FileTree({
     setContextMenu(null);
   }, []);
 
-  // 展开到某个文件的所有祖先目录
-  useEffect(() => {
-    if (!activeFilePath) return;
+  // activeFilePath 变化时展开其所有祖先目录。
+  // 采用 React 官方「render 期间根据 props 变化调整 state」模式，
+  // 比 effect 同步 setState 少一轮渲染，也不触发 set-state-in-effect 规则。
+  const [lastActiveFilePath, setLastActiveFilePath] = useState<string | null>(null);
+  if (activeFilePath && activeFilePath !== lastActiveFilePath) {
+    setLastActiveFilePath(activeFilePath);
     const parts = activeFilePath.split("/").filter(Boolean);
-    const paths: string[] = [];
+    const ancestorPaths: string[] = [];
     let cur = "";
     for (const p of parts.slice(0, -1)) {
       cur += "/" + p;
-      paths.push(cur);
+      ancestorPaths.push(cur);
     }
-    if (paths.length === 0) return;
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      for (const p of paths) next.add(p);
-      return next;
-    });
-  }, [activeFilePath]);
-
-  const isExpanded = (path: string) => expanded.has(path);
+    if (ancestorPaths.length > 0 && !ancestorPaths.every((p) => expanded.has(p))) {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        for (const p of ancestorPaths) next.add(p);
+        return next;
+      });
+    }
+  }
 
   return (
     <div className="w-full h-full overflow-y-auto select-none" onContextMenu={handleBlankContextMenu} onClick={handleClick}>

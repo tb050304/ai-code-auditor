@@ -36,6 +36,31 @@ export interface Issue {
   suggestion?: string;
 }
 
+/** 问题行高亮装饰（只用 Monaco decoration 的结构子集） */
+interface IssueDecoration {
+  range: {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  };
+  options: {
+    isWholeLine: boolean;
+    className: string;
+    glyphMarginClassName: string;
+    hoverMessage: { value: string };
+    overviewRuler: { color: string; position: number };
+  };
+}
+
+/** 本组件实际使用到的 Monaco 文本编辑器能力，避免把 ref 标成 any */
+interface MonacoCodeEditor {
+  revealLineInCenter(lineNumber: number): void;
+  setPosition(position: { lineNumber: number; column: number }): void;
+  focus(): void;
+  deltaDecorations(oldDecorations: string[], newDecorations: IssueDecoration[]): string[];
+}
+
 interface CodeEditorProps {
   value: string;
   onChange: (value: string | undefined) => void;
@@ -43,7 +68,6 @@ interface CodeEditorProps {
   selectedModel?: string;
   onModelChange?: (modelId: string) => void;
   issues?: Issue[];
-  onIssuesChange?: (issues: Issue[]) => void;
   fileName?: string;
   language?: string;
   // ---- 多 Tab 相关 ----
@@ -85,7 +109,6 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     selectedModel,
     onModelChange,
     issues = [],
-    onIssuesChange,
     fileName,
     language = "javascript",
     tabs = [],
@@ -109,7 +132,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   },
   ref
 ) {
-  const editorRef = useRef<any>(null);
+  const editorRef = useRef<MonacoCodeEditor | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const decorationsRef = useRef<string[]>([]);
   const [showIssuesPanel, setShowIssuesPanel] = useState(true);
@@ -130,7 +153,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   }));
 
   // 高亮问题代码
-  const highlightIssues = (editor: any, monaco: Monaco, issueList: Issue[]) => {
+  const highlightIssues = (editor: MonacoCodeEditor, monaco: Monaco, issueList: Issue[]) => {
     if (!editor || !monaco) return;
 
     // 清除之前的高亮
@@ -162,7 +185,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     };
 
     // 创建新的高亮
-    const newDecorations = issueList.map((issue) => {
+    const newDecorations: IssueDecoration[] = issueList.map((issue) => {
       // Monaco 使用 0-based 行号，但我们的 issue 是 1-based
       const startLineNumber = issue.startLine;
       const endLineNumber = issue.endLine;

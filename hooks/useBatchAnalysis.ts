@@ -66,9 +66,9 @@ export function useBatchAnalysis(): UseBatchAnalysisReturn {
       setResult(finalResult);
       setFileResults(finalResult.results);
       return finalResult;
-    } catch (err: any) {
+    } catch (err) {
       if (runId !== runIdRef.current) return null;
-      setError(err?.message ?? String(err));
+      setError(err instanceof Error ? err.message : String(err));
       return null;
     } finally {
       if (runId === runIdRef.current) {
@@ -100,8 +100,10 @@ export function useBatchAnalysis(): UseBatchAnalysisReturn {
 
   // 组件卸载时取消
   useEffect(() => {
+    // 复制到 effect 局部变量，cleanup 中不直接读取可能已变化的 ref.current
+    const runIdAtMount = runIdRef.current;
     return () => {
-      runIdRef.current++;
+      runIdRef.current = runIdAtMount + 1;
     };
   }, []);
 

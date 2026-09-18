@@ -218,7 +218,7 @@ export default function FileDropzone({ onImported, mode = "inline" }: FileDropzo
           ref={inputRef}
           type="file"
           multiple
-          // @ts-ignore - webkitdirectory 是非标准属性
+          // @ts-expect-error webkitdirectory 是非标准属性，React JSX 类型未声明
           webkitdirectory=""
           directory=""
           className="hidden"

@@ -301,7 +301,7 @@ export default function IDEPage() {
         analyzable.push(node.path);
       }
       if (node.type === "directory" && node.children) {
-        for (const child of node.children) walk(child as any);
+        for (const child of node.children) walk(child);
       }
     };
     walk(fileTree);
