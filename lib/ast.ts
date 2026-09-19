@@ -10,6 +10,7 @@
 import * as parser from "@babel/parser";
 import traverse, { NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
+import type { FixProposal, IssueFix } from "./ast/fixer";
 
 /**
  * 漏洞/问题信息
@@ -37,6 +38,11 @@ export interface Issue {
   endColumn: number;
   /** 建议修复方案 */
   suggestion?: string;
+  /**
+   * 自动修复提案（Day 15 框架，由规则的 fix 方法生成；无 fix 能力的规则缺省）。
+   * 纯数据，可随 Web Worker 结果结构化克隆。
+   */
+  fix?: IssueFix;
 }
 
 /**
@@ -151,6 +157,12 @@ interface Rule {
   description: string;
   suggestion: string;
   check: (path: NodePath, code: string) => Issue | null;
+  /**
+   * 可选自动修复（Day 15 框架）：仅在 check 命中后调用，
+   * 基于命中节点与已构造的 Issue 产出文本编辑提案；返回 null 表示放弃自动修复。
+   * 具体规则的 fix 实现从 Day 16 起补充。
+   */
+  fix?: (path: NodePath, issue: Issue, code: string) => FixProposal | null;
 }
 
 /**
@@ -913,6 +925,17 @@ export function analyzeCode(code: string, filename: string = "code.js"): Analysi
           const issue = rule.check(path, code);
           if (issue) {
             issue.codeSnippet = getCodeSnippet(code, issue.startLine, issue.endLine);
+            // 规则提供 fix 时，把文本编辑提案挂到问题上（修复失败不影响分析）
+            if (rule.fix) {
+              try {
+                const proposal = rule.fix(path, issue, code);
+                if (proposal && proposal.edits.length > 0) {
+                  issue.fix = { ...proposal, ruleId: rule.id };
+                }
+              } catch {
+                // 修复提案生成失败：问题照常上报，仅不带自动修复
+              }
+            }
             issues.push(issue);
             break;
           }
