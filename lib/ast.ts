@@ -10,7 +10,7 @@
 import * as parser from "@babel/parser";
 import traverse, { NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
-import type { FixProposal, IssueFix } from "./ast/fixer";
+import type { FixProposal, IssueFix, TextEdit } from "./ast/fixer";
 
 /**
  * 漏洞/问题信息
@@ -145,6 +145,22 @@ function getNodeLocation(node: t.Node): { startLine: number; startColumn: number
 function getCodeSnippet(code: string, startLine: number, endLine: number): string {
   const lines = code.split("\n");
   return lines.slice(startLine - 1, endLine).join("\n");
+}
+
+/**
+ * 根据节点的 Babel loc 生成文本编辑。
+ * 坐标转换：Babel column 是 0-based，TextEdit 是 1-based（与 Issue 一致）。
+ */
+function editFromNode(node: t.Node, replacement: string): TextEdit {
+  const start = node.loc!.start;
+  const end = node.loc!.end;
+  return {
+    startLine: start.line,
+    startColumn: start.column + 1,
+    endLine: end.line,
+    endColumn: end.column + 1,
+    replacement,
+  };
 }
 
 // ==================== 静态分析规则 ====================
@@ -293,6 +309,16 @@ const ruleNoConsoleLog: Rule = {
     }
     return null;
   },
+  // 仅当 console.log 作为独立语句时才移除（子表达式场景可能影响语法或副作用，交由人工）
+  fix: (path) => {
+    const stmt = path.parentPath;
+    if (!stmt?.isExpressionStatement()) return null;
+    return {
+      edits: [editFromNode(stmt.node, "")],
+      description: "移除 console.log 语句",
+      risk: "risky", // 参数求值可能有副作用
+    };
+  },
 };
 
 /**
@@ -323,6 +349,11 @@ const ruleNoDebugger: Rule = {
     }
     return null;
   },
+  fix: (path) => ({
+    edits: [editFromNode(path.node, "")],
+    description: "移除 debugger 语句",
+    risk: "safe",
+  }),
 };
 
 /**
@@ -353,6 +384,21 @@ const ruleNoVar: Rule = {
     }
     return null;
   },
+  // 保守统一替换为 let（而非猜测 const）：保证语义正确，const 由后续规则或人工判断
+  fix: (path) => {
+    const start = path.node.loc!.start;
+    return {
+      edits: [{
+        startLine: start.line,
+        startColumn: start.column + 1,
+        endLine: start.line,
+        endColumn: start.column + 1 + 3, // "var" 长度 3
+        replacement: "let",
+      }],
+      description: "将 var 改为 let",
+      risk: "review",
+    };
+  },
 };
 
 /**
@@ -369,12 +415,13 @@ const ruleNoDoubleEquals: Rule = {
     if (t.isBinaryExpression(path.node) &&
         (path.node.operator === "==" || path.node.operator === "!=")) {
       const loc = getNodeLocation(path.node);
+      const strict = path.node.operator === "==" ? "===" : "!==";
       return {
         id: "eqeqeq",
         name: "使用严格相等",
         type: "best-practice",
         severity: "warning",
-        message: `检测到 ${path.node.operator} 使用：建议使用 ${path.node.operator}=== || ${path.node.operator}!==`,
+        message: `检测到 ${path.node.operator} 使用：建议使用 ${strict}`,
         startLine: loc.startLine,
         startColumn: loc.startColumn,
         endLine: loc.endLine,
@@ -383,6 +430,24 @@ const ruleNoDoubleEquals: Rule = {
       };
     }
     return null;
+  },
+  // 替换左右操作数之间的操作符区间（保留原有空白的话直接替换中间文本）
+  fix: (path) => {
+    const node = path.node as t.BinaryExpression;
+    const leftEnd = node.left.loc!.end;
+    const rightStart = node.right.loc!.start;
+    const strict = node.operator === "==" ? "===" : "!==";
+    return {
+      edits: [{
+        startLine: leftEnd.line,
+        startColumn: leftEnd.column + 1,
+        endLine: rightStart.line,
+        endColumn: rightStart.column + 1,
+        replacement: ` ${strict} `,
+      }],
+      description: `将 ${node.operator} 改为 ${strict}`,
+      risk: "safe",
+    };
   },
 };
 
