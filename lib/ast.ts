@@ -11,6 +11,7 @@ import * as parser from "@babel/parser";
 import traverse, { NodePath } from "@babel/traverse";
 import * as t from "@babel/types";
 import type { FixProposal, IssueFix, TextEdit } from "./ast/fixer";
+import { lineColumnToOffset } from "./ast/fixer";
 
 /**
  * 漏洞/问题信息
@@ -644,6 +645,68 @@ const ruleNoMissingKey: Rule = {
     }
     return null;
   },
+  // 插入 key={index}；回调缺少 index 参数时同时补参数（item => / (item) / function (item) 三种形态）
+  fix: (path, _issue, code) => {
+    if (!t.isJSXElement(path.node)) return null;
+    const callback = path.parent;
+    if (!t.isArrowFunctionExpression(callback) && !t.isFunctionExpression(callback)) return null;
+    const params = callback.params;
+    const edits: TextEdit[] = [];
+    let indexName: string | null = null;
+
+    if (params.length >= 2 && t.isIdentifier(params[1])) {
+      indexName = params[1].name;
+    } else if (params.length === 1 && t.isIdentifier(params[0])) {
+      const param = params[0];
+      indexName = "index";
+      // 判断参数是否带括号：参数后第一个非空白字符是 ')' 即带括号
+      const endOffset = lineColumnToOffset(code, param.loc!.end.line, param.loc!.end.column + 1);
+      let parenthesized = false;
+      if (endOffset !== null) {
+        const rest = code.slice(endOffset);
+        const m = /^\s*/.exec(rest);
+        parenthesized = rest[m![0].length] === ")";
+      }
+      if (t.isArrowFunctionExpression(callback) && !parenthesized) {
+        // item =>  →  (item, index) =>
+        edits.push(editFromNode(param, `(${param.name}, index)`));
+      } else {
+        // (item) / function (item)  →  在参数后插入
+        const end = param.loc!.end;
+        edits.push({
+          startLine: end.line,
+          startColumn: end.column + 1,
+          endLine: end.line,
+          endColumn: end.column + 1,
+          replacement: ", index",
+        });
+      }
+    } else {
+      // 无参数或解构参数：无法可靠推导 index，交给人工
+      return null;
+    }
+
+    // 在开标签名后插入 key；尾随空格按紧邻字符决定，避免与属性间原有空格重复
+    const tagName = path.node.openingElement.name;
+    if (!tagName.loc) return null;
+    const nameEnd = tagName.loc.end;
+    const nameEndOffset = lineColumnToOffset(code, nameEnd.line, nameEnd.column + 1);
+    const nextChar = nameEndOffset !== null ? code[nameEndOffset] : "";
+    const needTrailingSpace = !/[\s/>]/.test(nextChar);
+    edits.push({
+      startLine: nameEnd.line,
+      startColumn: nameEnd.column + 1,
+      endLine: nameEnd.line,
+      endColumn: nameEnd.column + 1,
+      replacement: ` key={${indexName}}${needTrailingSpace ? " " : ""}`,
+    });
+
+    return {
+      edits,
+      description: `为 map 渲染的元素添加 key={${indexName}}（必要时补充 index 参数）`,
+      risk: "review", // index 作为 key 对会重排的列表不理想，但保证渲染正确
+    };
+  },
 };
 
 /**
@@ -826,6 +889,189 @@ const ruleNoTodoComment: Rule = {
   },
 };
 
+// ==================== Day 17 新增规则 ====================
+
+/** 拼接链片段：字符串字面量段或连续非字符串表达式段（后者合并以保留 + 结合语义） */
+type ConcatPart =
+  | { kind: "str"; node: t.StringLiteral }
+  | { kind: "expr"; first: t.Node; last: t.Node };
+
+function flattenConcat(node: t.Node): ConcatPart[] {
+  if (t.isBinaryExpression(node) && node.operator === "+") {
+    return [...flattenConcat(node.left), ...flattenConcat(node.right)];
+  }
+  if (t.isStringLiteral(node)) return [{ kind: "str", node }];
+  return [{ kind: "expr", first: node, last: node }];
+}
+
+/** 合并相邻的表达式段（保留源码中它们之间的 " + "，避免破坏左结合语义） */
+function mergeExprParts(flat: ConcatPart[]): ConcatPart[] {
+  const parts: ConcatPart[] = [];
+  for (const p of flat) {
+    const prev = parts[parts.length - 1];
+    if (p.kind === "expr" && prev?.kind === "expr") {
+      prev.last = p.last;
+    } else {
+      parts.push(p.kind === "str" ? { ...p } : { ...p });
+    }
+  }
+  return parts;
+}
+
+/** 转义模板字符串字面量中的特殊字符（反斜杠必须最先处理） */
+function escapeForTemplate(s: string): string {
+  return s
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\$\{/g, "\\${");
+}
+
+/**
+ * 规则20: 字符串拼接应使用模板字符串（prefer-template）
+ */
+const rulePreferTemplate: Rule = {
+  id: "prefer-template",
+  name: "使用模板字符串",
+  type: "best-practice",
+  severity: "info",
+  description: "字符串与表达式拼接应使用模板字符串",
+  suggestion: "使用反引号模板字符串与 ${} 插值",
+  check: (path) => {
+    const node = path.node;
+    if (!t.isBinaryExpression(node) || node.operator !== "+") return null;
+    // 只在整条拼接链的根节点报告一次，避免每个子表达式重复报
+    if (t.isBinaryExpression(path.parent) && path.parent.operator === "+") return null;
+    const flat = flattenConcat(node);
+    const hasString = flat.some((p) => p.kind === "str");
+    const hasExpr = flat.some((p) => p.kind === "expr");
+    // 纯字符串字面量相加（"a" + "b"）留给人工/格式化工具，不强制
+    if (!hasString || !hasExpr) return null;
+    const loc = getNodeLocation(node);
+    return {
+      id: "prefer-template",
+      name: "使用模板字符串",
+      type: "best-practice",
+      severity: "info",
+      message: "检测到字符串拼接：建议使用模板字符串",
+      startLine: loc.startLine,
+      startColumn: loc.startColumn,
+      endLine: loc.endLine,
+      endColumn: loc.endColumn,
+      suggestion: "使用反引号模板字符串与 ${} 插值",
+    };
+  },
+  fix: (path, _issue, code) => {
+    const root = path.node as t.BinaryExpression;
+    const parts = mergeExprParts(flattenConcat(root));
+    let text = "`";
+    for (const p of parts) {
+      if (p.kind === "str") {
+        text += escapeForTemplate(p.node.value);
+      } else {
+        text += "${" + code.slice(p.first.start!, p.last.end!) + "}";
+      }
+    }
+    text += "`";
+    return {
+      edits: [editFromNode(root, text)],
+      description: "将字符串拼接重写为模板字符串",
+      risk: "safe", // 连续非字符串段已按左结合合并为单个 ${}，语义等价
+    };
+  },
+};
+
+/** 取 import specifier 在源码中的名字（字符串字面量模块名属边缘语法，兜底） */
+function importedSpecifierName(node: t.Node): string {
+  if (t.isIdentifier(node)) return node.name;
+  if (t.isStringLiteral(node)) return node.value;
+  return "";
+}
+
+/**
+ * 规则21: 未使用的 import（整理 import）
+ * 纯副作用导入（import "./x.css"，无 specifier）永不报告。
+ */
+const ruleNoUnusedImports: Rule = {
+  id: "no-unused-imports",
+  name: "移除未使用的导入",
+  type: "best-practice",
+  severity: "info",
+  description: "存在未使用的 import，增加噪音且可能误导",
+  suggestion: "移除未使用的导入（注意确认是否为副作用导入）",
+  check: (path) => {
+    if (!t.isImportDeclaration(path.node)) return null;
+    const decl = path.node;
+    if (decl.specifiers.length === 0) return null; // 副作用导入，永不报告
+    const unused = decl.specifiers.filter((spec) => {
+      const binding = path.scope.getBinding(spec.local.name);
+      // 找不到绑定时保守不动；referenced 同时计入 JSX 与 TS 类型位置的引用
+      return binding ? !binding.referenced : false;
+    });
+    if (unused.length === 0) return null;
+    const loc = getNodeLocation(decl);
+    const names = unused.map((s) => s.local.name).join(", ");
+    return {
+      id: "no-unused-imports",
+      name: "移除未使用的导入",
+      type: "best-practice",
+      severity: "info",
+      message: `存在 ${unused.length} 个未使用的导入：${names}`,
+      startLine: loc.startLine,
+      startColumn: loc.startColumn,
+      endLine: loc.endLine,
+      endColumn: loc.endColumn,
+      suggestion: "移除未使用的导入（注意确认是否为副作用导入）",
+    };
+  },
+  // 单编辑整体重建 import 声明：天然避免同声明内多个 specifier 的编辑区间重叠
+  fix: (path) => {
+    const decl = path.node as t.ImportDeclaration;
+    const kept = decl.specifiers.filter((spec) => path.scope.getBinding(spec.local.name)?.referenced);
+
+    // 全部未使用：整条删除（留空行，与其他删语句修复一致）
+    if (kept.length === 0) {
+      return {
+        edits: [editFromNode(decl, "")],
+        description: "移除未使用的 import 声明",
+        risk: "review",
+      };
+    }
+
+    const segments: string[] = [];
+    const defaultSpec = kept.find((s) => t.isImportDefaultSpecifier(s));
+    const namespaceSpec = kept.find((s) => t.isImportNamespaceSpecifier(s));
+    const namedSpecs = kept.filter((s): s is t.ImportSpecifier => t.isImportSpecifier(s));
+
+    if (defaultSpec) {
+      segments.push(defaultSpec.local.name);
+    }
+    if (namespaceSpec) {
+      segments.push(`* as ${namespaceSpec.local.name}`);
+    }
+    if (namedSpecs.length > 0) {
+      const body = namedSpecs
+        .map((s) => {
+          const imported = importedSpecifierName(s.imported);
+          const alias = imported !== s.local.name ? ` as ${s.local.name}` : "";
+          return (s.importKind === "type" ? "type " : "") + imported + alias;
+        })
+        .join(", ");
+      segments.push(`{ ${body} }`);
+    }
+
+    const sourceRaw =
+      (decl.source.extra?.raw as string | undefined) ?? JSON.stringify(decl.source.value);
+    const typePrefix = decl.importKind === "type" ? "type " : "";
+    const rebuilt = `import ${typePrefix}${segments.join(", ")} from ${sourceRaw};`;
+
+    return {
+      edits: [editFromNode(decl, rebuilt)],
+      description: "移除未使用的导入并重建 import 声明",
+      risk: "review", // 重建会规范化格式；个别带 specifier 的导入可能依赖模块副作用
+    };
+  },
+};
+
 // 规则列表
 const rules: Rule[] = [
   ruleNoEval,
@@ -847,6 +1093,8 @@ const rules: Rule[] = [
   ruleNoHardcodedPhone,
   ruleNoSuspiciousComment,
   ruleNoTodoComment,
+  rulePreferTemplate,
+  ruleNoUnusedImports,
 ];
 
 /**

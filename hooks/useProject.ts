@@ -12,6 +12,12 @@ import {
   type SnapshotMeta,
   type FileSnapshot,
 } from "@/lib/snapshots";
+import {
+  applyFixes,
+  type AppliedFix,
+  type IssueFix,
+  type SkippedFix,
+} from "@/lib/ast/fixer";
 
 export interface UseProjectReturn {
   projects: Project[];
@@ -36,6 +42,21 @@ export interface UseProjectReturn {
    * 传入 snapshotMeta 可自定义来源/描述（如 Diff 合并应用、全部回退）。
    */
   writeFile: (path: string, content: string, snapshotMeta?: SnapshotMeta) => Promise<FileNode>;
+  /**
+   * 对单文件应用一组自动修复提案：读当前内容 → applyFixes →
+   * 有实际改动时以 auto-fix 来源写回（写前自动快照），并返回 before/after 供预览。
+   * 无改动时不写盘、不快照。
+   */
+  applyFileAutoFixes: (
+    path: string,
+    fixes: IssueFix[],
+  ) => Promise<{
+    before: string;
+    after: string;
+    changed: boolean;
+    applied: AppliedFix[];
+    skipped: SkippedFix[];
+  }>;
   mkdir: (path: string) => Promise<FileNode>;
   deleteNode: (path: string) => Promise<void>;
   renameNode: (oldPath: string, newName: string) => Promise<FileNode>;
@@ -218,6 +239,32 @@ export function useProject(): UseProjectReturn {
     [activeProjectId, refreshFileTree],
   );
 
+  const applyFileAutoFixes = useCallback(
+    async (path: string, fixes: IssueFix[]) => {
+      if (!activeProjectId) throw new Error("无活动项目");
+      const normalized = joinPath(path);
+      const before = await backendRef.current.readFile(activeProjectId, normalized);
+      const result = applyFixes(before, fixes);
+      const changed = result.code !== before;
+      if (changed) {
+        // writeFile 写前自动快照；显式标记 auto-fix 来源与命中条数
+        await writeFile(
+          normalized,
+          result.code,
+          { source: "auto-fix", description: `自动修复应用 ${result.applied.length} 处` },
+        );
+      }
+      return {
+        before,
+        after: result.code,
+        changed,
+        applied: result.applied,
+        skipped: result.skipped,
+      };
+    },
+    [activeProjectId, writeFile],
+  );
+
   const mkdir = useCallback(
     async (path: string) => {
       if (!activeProjectId) throw new Error("无活动项目");
@@ -380,6 +427,7 @@ export function useProject(): UseProjectReturn {
     fileTree,
     refreshFileTree,
     writeFile,
+    applyFileAutoFixes,
   mkdir,
   deleteNode,
   renameNode,
