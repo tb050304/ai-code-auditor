@@ -116,6 +116,20 @@ function isPosInt(n: unknown): n is number {
   return typeof n === "number" && Number.isInteger(n) && n >= 1;
 }
 
+/**
+ * 行列（1-based，与 TextEdit/Issue 同约定）→ 字符偏移。
+ * 供规则侧从 Babel 节点 loc 切取源码文本；越界返回 null。
+ * 输入假定已是 LF（调用方若读外部文件应先归一化 CRLF）。
+ */
+export function lineColumnToOffset(
+  code: string,
+  line: number,
+  column: number,
+): number | null {
+  const map = buildSourceMap(code);
+  return toOffset(map, line, column);
+}
+
 /** 行列（1-based）→ 字符偏移；坐标越界返回 null */
 function toOffset(map: SourceMap, line: number, column: number): number | null {
   if (!isPosInt(line) || line > map.lineCount) return null;
