@@ -4,6 +4,7 @@ import CodeEditor, { CodeEditorHandle } from "@/components/editor/CodeEditor";
 import AgentConsole from "@/components/console/AgentConsole";
 import ConversationSidebar from "@/components/console/ConversationSidebar";
 import ProjectSidebar from "@/components/file-tree/ProjectSidebar";
+import DiffViewer, { type DiffApplyAction } from "@/components/diff/DiffViewer";
 import { useAuditor } from "@/hooks/useAuditor";
 import { useASTAnalysis } from "@/hooks/useASTAnalysis";
 import { useConversations } from "@/hooks/useConversations";
@@ -12,6 +13,8 @@ import { useEditorTabs } from "@/hooks/useEditorTabs";
 import { useBatchAnalysis } from "@/hooks/useBatchAnalysis";
 import { DEFAULT_CODE } from "@/lib/defaultCode";
 import { isAnalyzableFile } from "@/lib/ast/batch-types";
+import { isFixable, type IssueFix } from "@/lib/ast/fixer";
+import { inferMonacoLanguage } from "@/lib/monaco-lang";
 import { createMessage, buildHistoryMessages } from "@/lib/messages";
 import type { Conversation } from "@/types";
 import type { ImportResult } from "@/lib/storage/import";
@@ -54,6 +57,7 @@ export default function IDEPage() {
     refreshProjects,
     fileTree,
     writeFile,
+    applyFileAutoFixes,
     mkdir,
     deleteNode,
     renameNode,
@@ -94,6 +98,7 @@ export default function IDEPage() {
     startAnalysis: startBatchAnalysis,
     cancelAnalysis: cancelBatchAnalysis,
     getFileIssues,
+    reanalyzeFile,
   } = useBatchAnalysis();
 
   // 当前编辑器内容：有激活 Tab 时用 Tab 的内容，否则用单文件模式的 code
@@ -279,6 +284,142 @@ export default function IDEPage() {
       return snap;
     },
     [restoreFileSnapshot, tabs, reloadTab],
+  );
+
+  // ---- Day 18 自动修复 ----
+  const [isAutoFixing, setIsAutoFixing] = useState(false);
+  const [fixPreview, setFixPreview] = useState<{
+    path: string;
+    before: string;
+    after: string;
+    appliedCount: number;
+    skippedCount: number;
+  } | null>(null);
+
+  /** 修复落地后的同步：刷新已打开 Tab 的内容 + 原地重新分析该文件 */
+  const syncFixedFile = useCallback(
+    (path: string, content: string) => {
+      if (tabs.some((t) => t.path === path)) reloadTab(path, content);
+      reanalyzeFile(path, content);
+    },
+    [tabs, reloadTab, reanalyzeFile],
+  );
+
+  /** 单文件修复：应用全部可修复提案（写前 auto-fix 快照）→ 弹 DiffViewer 逐条确认 */
+  const handleAutoFixFile = useCallback(
+    async (path: string) => {
+      if (isAutoFixing) return;
+      const result = fileResults.get(path);
+      if (!result) return;
+      const fixes: IssueFix[] = result.issues.filter(isFixable).map((i) => i.fix!);
+      if (fixes.length === 0) return;
+      // 有未保存编辑时不动盘，避免覆盖用户正在编辑的内容
+      if (tabs.some((t) => t.path === path) && isDirty(path)) {
+        alert("该文件有未保存的修改，请先保存（Ctrl+S）或撤销后再执行自动修复。");
+        return;
+      }
+
+      setIsAutoFixing(true);
+      try {
+        const r = await applyFileAutoFixes(path, fixes);
+        if (!r.changed) {
+          alert(
+            `${fixes.length} 个修复均未生效（内容可能已过期或编辑区间冲突），请重新分析后再试。`,
+          );
+          return;
+        }
+        syncFixedFile(path, r.after);
+        setFixPreview({
+          path,
+          before: r.before,
+          after: r.after,
+          appliedCount: r.applied.length,
+          skippedCount: r.skipped.length,
+        });
+      } catch (e) {
+        alert(`自动修复失败: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setIsAutoFixing(false);
+      }
+    },
+    [isAutoFixing, fileResults, tabs, isDirty, applyFileAutoFixes, syncFixedFile],
+  );
+
+  /** 一键修复所有文件：逐文件应用（不弹预览，统一汇总），写前均有 auto-fix 快照 */
+  const handleAutoFixAll = useCallback(async () => {
+    if (isAutoFixing) return;
+    const pending: Array<{ path: string; fixes: IssueFix[] }> = [];
+    const dirty: string[] = [];
+    for (const [path, result] of fileResults) {
+      if (tabs.some((t) => t.path === path) && isDirty(path)) {
+        dirty.push(path.slice(1));
+        continue;
+      }
+      const fixes: IssueFix[] = result.issues.filter(isFixable).map((i) => i.fix!);
+      if (fixes.length > 0) pending.push({ path, fixes });
+    }
+    if (pending.length === 0) {
+      alert(dirty.length > 0 ? "可修复的文件都有未保存修改，请先保存。" : "没有可自动修复的问题。");
+      return;
+    }
+    const dirtyNote = dirty.length > 0 ? `\n\n以下 ${dirty.length} 个文件因有未保存修改将被跳过：\n${dirty.join("\n")}` : "";
+    if (
+      !confirm(
+        `将对 ${pending.length} 个文件应用自动修复（写前自动快照，可随时回退）。是否继续？${dirtyNote}`,
+      )
+    ) {
+      return;
+    }
+
+    setIsAutoFixing(true);
+    let changedFiles = 0;
+    let appliedFixes = 0;
+    let skippedFixes = 0;
+    try {
+      for (const { path, fixes } of pending) {
+        const r = await applyFileAutoFixes(path, fixes);
+        if (r.changed) {
+          changedFiles += 1;
+          syncFixedFile(path, r.after);
+        }
+        appliedFixes += r.applied.length;
+        skippedFixes += r.skipped.length;
+      }
+      alert(
+        `✓ 已修复 ${changedFiles}/${pending.length} 个文件，应用 ${appliedFixes} 处` +
+          `${skippedFixes > 0 ? `，跳过 ${skippedFixes} 处（内容过期/区间冲突）` : ""}。` +
+          `\n所有修改前均已自动快照，可在文件历史中回退。`,
+      );
+    } catch (e) {
+      alert(`一键修复中断: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsAutoFixing(false);
+    }
+  }, [isAutoFixing, fileResults, tabs, isDirty, applyFileAutoFixes, syncFixedFile]);
+
+  /** 预览面板的最终决定：全部接受=保持 after；回退/合并=写回所选内容（再次自动快照） */
+  const handleFixPreviewApply = useCallback(
+    async (mergedText: string, action: DiffApplyAction) => {
+      if (!fixPreview) return;
+      const { path, before } = fixPreview;
+      if (action === "accept-all") {
+        // after 已写盘且已重新分析，无需再写
+        setFixPreview(null);
+        return;
+      }
+      const isRollback = action === "rollback-all";
+      const finalText = isRollback ? before : mergedText;
+      await writeFile(
+        path,
+        finalText,
+        isRollback
+          ? { source: "rollback", description: "自动修复预览：全部回退前自动快照" }
+          : { source: "diff-apply", description: "自动修复预览：按逐条决策合并前自动快照" },
+      );
+      syncFixedFile(path, finalText);
+      setFixPreview(null);
+    },
+    [fixPreview, writeFile, syncFixedFile],
   );
 
   // 导入成功后刷新项目列表 + 自动选中新导入的项目（否则文件树空白）
@@ -575,6 +716,9 @@ export default function IDEPage() {
         onReanalyze={handleReanalyze}
         fileResults={fileResults}
         onIssueClick={handleIssueClick}
+        onAutoFixFile={handleAutoFixFile}
+        onAutoFixAll={handleAutoFixAll}
+        isAutoFixing={isAutoFixing}
       />
 
       {/* 右侧：会话历史面板 */}
@@ -609,6 +753,22 @@ export default function IDEPage() {
         onToggleConversations={() => setShowConversationPanel((v) => !v)}
         conversationsOpen={showConversationPanel}
       />
+
+      {/* Day 18 自动修复预览：左=修复前（已 auto-fix 快照），右=修复后，可逐块决定取舍 */}
+      {fixPreview && (
+        <DiffViewer
+          key={`autofix:${fixPreview.path}`}
+          open
+          onClose={() => setFixPreview(null)}
+          title={`自动修复预览 · ${fixPreview.path.slice(1)}（应用 ${fixPreview.appliedCount} 处${fixPreview.skippedCount > 0 ? `，跳过 ${fixPreview.skippedCount} 处` : ""}）`}
+          original={fixPreview.before}
+          modified={fixPreview.after}
+          language={inferMonacoLanguage(fixPreview.path)}
+          originalLabel="修复前（已自动快照，可回退）"
+          modifiedLabel="修复后（当前文件）"
+          onApply={handleFixPreviewApply}
+        />
+      )}
     </main>
   );
 }
