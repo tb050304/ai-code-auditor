@@ -7,6 +7,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { getBatchAnalyzer } from "@/lib/ast/batch-analyzer";
+import { analyzeFileContent } from "@/lib/ast/batch-types";
 import type {
   FileAnalysisTask,
   FileAnalysisResult,
@@ -33,6 +34,11 @@ export interface UseBatchAnalysisReturn {
   clearResult: () => void;
   /** 获取单个文件的问题（用于当前编辑器文件） */
   getFileIssues: (path: string) => FileAnalysisResult["issues"];
+  /**
+   * 用最新内容在主线程重新分析单个文件并替换结果 Map 中对应条目
+   * （自动修复落地后原地刷新，不必重跑整批 Worker 分析）。
+   */
+  reanalyzeFile: (path: string, content: string) => FileAnalysisResult;
 }
 
 export function useBatchAnalysis(): UseBatchAnalysisReturn {
@@ -98,6 +104,16 @@ export function useBatchAnalysis(): UseBatchAnalysisReturn {
     [fileResults],
   );
 
+  const reanalyzeFile = useCallback((path: string, content: string) => {
+    const fileResult = analyzeFileContent(path, content);
+    setFileResults((prev) => {
+      const next = new Map(prev);
+      next.set(path, fileResult);
+      return next;
+    });
+    return fileResult;
+  }, []);
+
   // 组件卸载时取消
   useEffect(() => {
     // 复制到 effect 局部变量，cleanup 中不直接读取可能已变化的 ref.current
@@ -117,5 +133,6 @@ export function useBatchAnalysis(): UseBatchAnalysisReturn {
     cancelAnalysis,
     clearResult,
     getFileIssues,
+    reanalyzeFile,
   };
 }

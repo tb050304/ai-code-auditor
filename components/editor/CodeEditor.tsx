@@ -94,6 +94,12 @@ interface CodeEditorProps {
   // ---- 问题面板 ----
   fileResults?: Map<string, FileAnalysisResult>;
   onIssueClick?: (path: string, line: number) => void;
+  /** 单文件自动修复（弹预览） */
+  onAutoFixFile?: (path: string) => void;
+  /** 所有文件一键自动修复 */
+  onAutoFixAll?: () => void;
+  /** 修复流程进行中 */
+  isAutoFixing?: boolean;
 }
 
 // 暴露给父组件的方法
@@ -129,6 +135,9 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     onReanalyze,
     fileResults,
     onIssueClick,
+    onAutoFixFile,
+    onAutoFixAll,
+    isAutoFixing = false,
   },
   ref
 ) {
@@ -509,6 +518,9 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
                   fileResults={fileResults}
                   onIssueClick={onIssueClick}
                   activeFilePath={activeTabPath ?? null}
+                  onAutoFixFile={onAutoFixFile}
+                  onAutoFixAll={onAutoFixAll}
+                  isFixing={isAutoFixing}
                 />
               </div>
             )}

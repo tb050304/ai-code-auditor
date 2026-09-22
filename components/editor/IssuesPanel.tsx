@@ -3,6 +3,7 @@ import React, { useState, useMemo } from "react";
 import { groupIssuesByFile, summarizeIssues, type NodeIssueSummary } from "@/lib/ast/issue-aggregate";
 import type { FileAnalysisResult } from "@/lib/ast/batch-types";
 import type { Issue } from "@/lib/ast";
+import { isFixable } from "@/lib/ast/fixer";
 
 interface IssuesPanelProps {
   fileResults: Map<string, FileAnalysisResult>;
@@ -10,6 +11,12 @@ interface IssuesPanelProps {
   onIssueClick?: (path: string, line: number) => void;
   /** 当前激活的文件路径（用于高亮） */
   activeFilePath?: string | null;
+  /** 对单个文件应用全部可自动修复的问题（弹出预览） */
+  onAutoFixFile?: (path: string) => void;
+  /** 对所有文件一键应用可自动修复的问题 */
+  onAutoFixAll?: () => void;
+  /** 修复流程进行中（禁用按钮避免并发写） */
+  isFixing?: boolean;
 }
 
 type FilterType = "all" | "error" | "warning" | "info";
@@ -30,11 +37,24 @@ export default function IssuesPanel({
   fileResults,
   onIssueClick,
   activeFilePath,
+  onAutoFixFile,
+  onAutoFixAll,
+  isFixing = false,
 }: IssuesPanelProps) {
   const [filter, setFilter] = useState<FilterType>("all");
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
 
   const grouped = useMemo(() => groupIssuesByFile(fileResults), [fileResults]);
+
+  // 全项目可自动修复的问题总数（不受当前严重度过滤器影响）
+  const totalFixable = useMemo(
+    () =>
+      grouped.reduce(
+        (sum, g) => sum + g.issues.filter((i) => isFixable(i)).length,
+        0,
+      ),
+    [grouped],
+  );
 
   const summary = useMemo<NodeIssueSummary>(() => {
     let errorCount = 0;
@@ -95,6 +115,17 @@ export default function IssuesPanel({
           <span className="text-slate-500">
             {summary.total} 个
           </span>
+          {onAutoFixAll && totalFixable > 0 && (
+            <button
+              type="button"
+              disabled={isFixing}
+              onClick={onAutoFixAll}
+              title="对所有文件应用可自动修复的问题（写前自动快照，可回退）"
+              className="ml-1 px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              🔧 一键修复 {totalFixable}
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-0.5 text-xs">
           <FilterButton
@@ -138,6 +169,7 @@ export default function IssuesPanel({
             const isExpanded = expandedFiles.has(group.path) || activeFilePath === group.path;
             const isActive = activeFilePath === group.path;
             const styles = SEVERITY_STYLES[group.summary.level];
+            const fixableCount = group.issues.filter((i) => isFixable(i)).length;
 
             return (
               <div key={group.path} className="border-b border-slate-800/60 last:border-b-0">
@@ -157,6 +189,20 @@ export default function IssuesPanel({
                   <span className="truncate flex-1 min-w-0 text-slate-300" title={group.path}>
                     {group.path.slice(1)}
                   </span>
+                  {onAutoFixFile && fixableCount > 0 && (
+                    <button
+                      type="button"
+                      disabled={isFixing}
+                      title={`修复该文件 ${fixableCount} 个可自动修复的问题（预览确认）`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAutoFixFile(group.path);
+                      }}
+                      className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      🔧 {fixableCount}
+                    </button>
+                  )}
                   <span className="text-slate-500 flex-shrink-0 ml-2">
                     {group.issues.length}
                   </span>
@@ -192,6 +238,14 @@ export default function IssuesPanel({
                             <span className="text-slate-500 text-[10px] truncate">
                               {issue.name}
                             </span>
+                            {isFixable(issue) && (
+                              <span
+                                className="text-[9px] px-1 rounded bg-emerald-500/15 text-emerald-300 flex-shrink-0"
+                                title={`该问题可自动修复（风险：${issue.fix?.risk === "safe" ? "低" : issue.fix?.risk === "review" ? "需复核" : "较高"}）`}
+                              >
+                                可修复
+                              </span>
+                            )}
                           </div>
                           <div className="text-slate-400 mt-0.5 truncate" title={issue.message}>
                             {issue.message}

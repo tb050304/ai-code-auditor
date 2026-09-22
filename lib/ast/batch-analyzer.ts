@@ -20,7 +20,7 @@ import type {
   BatchAnalysisResult,
   WorkerMessage,
 } from "./batch-types";
-import { isAnalyzableFile } from "./batch-types";
+import { isAnalyzableFile, hashContent } from "./batch-types";
 
 export interface BatchAnalyzerOptions {
   /** 并发 Worker 数量，默认取 navigator.hardwareConcurrency || 4 */
@@ -156,7 +156,7 @@ export class BatchAnalyzer {
   private runTask(worker: Worker, task: FileAnalysisTask): Promise<FileAnalysisResult> {
     return new Promise((resolve) => {
       // 先查缓存
-      const contentHash = this.hashContent(task.content);
+      const contentHash = hashContent(task.content);
       const cached = this.cache.get(contentHash);
       if (cached) {
         resolve({
@@ -281,15 +281,6 @@ export class BatchAnalyzer {
     }
     this.workers = [];
     this.busyWorkers.clear();
-  }
-
-  /** 简单字符串哈希（djb2） */
-  private hashContent(str: string): string {
-    let hash = 5381;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) + hash) ^ str.charCodeAt(i);
-    }
-    return (hash >>> 0).toString(36);
   }
 }
 
