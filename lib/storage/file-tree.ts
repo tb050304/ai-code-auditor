@@ -258,3 +258,21 @@ export function searchTree(root: TreeNode, query: string): TreeNode[] {
   walk(root);
   return results;
 }
+
+/**
+ * 深度优先收集树中全部文件路径；传入 predicate 可按需过滤
+ * （如 Agent 工具的 listFiles / runAnalysis）。
+ */
+export function collectFilePaths(root: TreeNode, predicate?: (path: string) => boolean): string[] {
+  const paths: string[] = [];
+  const walk = (node: TreeNode): void => {
+    if (node.type === "file") {
+      if (!predicate || predicate(node.path)) paths.push(node.path);
+    }
+    if (node.type === "directory" && node.children) {
+      for (const child of node.children) walk(child);
+    }
+  };
+  walk(root);
+  return paths;
+}
