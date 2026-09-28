@@ -13,6 +13,7 @@ import React, { useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Conversation } from "@/types";
+import AgentSteps from "./AgentSteps";
 
 interface ASTSummary {
   totalIssues: number;
@@ -33,6 +34,9 @@ interface AgentConsoleProps {
   onToggleConversations?: () => void;
   /** 会话历史面板当前是否展开 */
   conversationsOpen?: boolean;
+  /** 是否处于 Agent 模式（思考-执行循环，工具调用面板） */
+  agentMode?: boolean;
+  onAgentModeChange?: (enabled: boolean) => void;
 }
 
 /** 结束状态对应的提示条 */
@@ -53,6 +57,8 @@ export default function AgentConsole({
   width = 450,
   onToggleConversations,
   conversationsOpen = false,
+  agentMode = false,
+  onAgentModeChange,
 }: AgentConsoleProps) {
   const messages = conversation?.messages ?? [];
   const lastMessage = messages[messages.length - 1];
@@ -161,9 +167,12 @@ export default function AgentConsole({
                       )}
                     </div>
 
+                    {/* Agent 模式：思考-执行循环的每步工具面板 */}
+                    <AgentSteps steps={message.steps} />
+
                     <article className="prose prose-invert prose-sm max-w-none prose-pre:bg-slate-800 prose-pre:border prose-pre:border-slate-700">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {message.content || "*正在等待模型输出…*"}
+                        {message.content || (message.steps?.length ? "" : "*正在等待模型输出…*")}
                       </ReactMarkdown>
                     </article>
                   </div>
@@ -183,11 +192,26 @@ export default function AgentConsole({
         )}
       </div>
 
-      {/* 底部：补充要求 + 运行/停止 */}
+      {/* 底部：模式开关 + 补充要求 + 运行/停止 */}
       <div className="px-4 pt-2 pb-3 border-t border-slate-800 bg-slate-900 shrink-0">
-        <label className="block text-[11px] text-slate-400 mb-1">
-          补充要求 / 继续追问（可选）
-        </label>
+        <div className="flex items-center justify-between mb-1">
+          <label className="block text-[11px] text-slate-400">
+            {agentMode ? "Agent 任务指令（可操作项目文件）" : "补充要求 / 继续追问（可选）"}
+          </label>
+          <button
+            type="button"
+            onClick={() => onAgentModeChange?.(!agentMode)}
+            title="Agent 模式：模型可循环调用工具（读/写文件、运行分析、自动修复）"
+            aria-pressed={agentMode}
+            className={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded border transition-colors ${
+              agentMode
+                ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-300"
+                : "bg-slate-800 border-slate-700 text-slate-400 hover:text-white"
+            }`}
+          >
+            🤖 Agent 模式
+          </button>
+        </div>
         <textarea
           value={userPrompt}
           onChange={(e) => onUserPromptChange(e.target.value)}
@@ -198,7 +222,11 @@ export default function AgentConsole({
               if (!isAuditing) onRunAudit();
             }
           }}
-          placeholder="例如：重点解释第 2 个问题的修复方式…"
+          placeholder={
+            agentMode
+              ? "例如：审计整个项目并自动修复所有可安全修复的问题…"
+              : "例如：重点解释第 2 个问题的修复方式…"
+          }
           className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-slate-300 placeholder-slate-500 focus:outline-none focus:border-cyan-500 resize-none"
           rows={2}
         />
@@ -208,7 +236,7 @@ export default function AgentConsole({
             disabled={isAuditing}
             className="flex-1 font-bold py-2 px-4 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-cyan-600 hover:bg-cyan-500 text-white"
           >
-            🚀 运行审计
+            {agentMode ? "🤖 运行 Agent" : "🚀 运行审计"}
           </button>
           {isAuditing && (
             <button
@@ -219,7 +247,11 @@ export default function AgentConsole({
             </button>
           )}
         </div>
-        <p className="mt-1 text-[10px] text-slate-600">提示：喜欢的话可用 Ctrl/Cmd + Enter 快速运行审计。</p>
+        <p className="mt-1 text-[10px] text-slate-600">
+          {agentMode
+            ? "Agent 将循环执行：思考 → 调用工具 → 回执 → 继续思考，每一步在上方实时展示。"
+            : "提示：喜欢的话可用 Ctrl/Cmd + Enter 快速运行审计。"}
+        </p>
       </div>
     </section>
   );

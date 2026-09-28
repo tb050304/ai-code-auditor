@@ -23,7 +23,7 @@ export interface StreamChunk {
 }
 
 /** 统一的模型对话消息结构（system / user / assistant 均可） */
-interface ChatMessage {
+export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
@@ -69,6 +69,30 @@ export async function* analyzeCodeStream(
   // 单一来源构造“用户消息”文本
   const userContent = buildUserContent(code, userPrompt);
   const messages = buildMessages(history, userContent);
+
+  yield* chatStream(messages, modelId);
+}
+
+/**
+ * 通用多轮对话流式接口（Day 20）：messages 由调用方完整构造（含 system），
+ * 本函数只负责按 provider 分发流式请求。/api/audit 的单轮审计与
+ * /api/agent 的思考-执行循环共用此底层。
+ */
+export async function* chatStream(
+  messages: ChatMessage[],
+  modelId?: string
+): AsyncGenerator<StreamChunk, void, unknown> {
+  const config = modelId ? getModelConfig(modelId) : getDefaultModelConfig();
+
+  if (!config) {
+    throw new Error("未找到指定的模型配置");
+  }
+
+  const apiKey = process.env[config.apiKeyEnv as keyof typeof process.env];
+
+  if (!apiKey) {
+    throw new Error(`服务器未配置 ${config.apiKeyEnv}`);
+  }
 
   if (config.provider === "deepseek") {
     yield* analyzeWithOpenAICompatibleStream(config, apiKey, messages);

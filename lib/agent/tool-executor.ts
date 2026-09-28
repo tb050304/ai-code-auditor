@@ -278,6 +278,59 @@ export function formatToolResultForModel(result: ToolResult): string {
 }
 
 // ---------------------------------------------------------------------------
+// 思考-执行循环的辅助序列化（Day 20）
+// ---------------------------------------------------------------------------
+
+/**
+ * 把一轮全部工具回执拼成继续对话的用户消息。
+ * 引导语放在末尾，驱动模型"未完成继续调用工具，已完成输出最终总结"。
+ */
+export function formatToolReceipts(results: ToolResult[]): string {
+  const parts = results.map(
+    (r, i) =>
+      `[回执 ${i + 1}/${results.length}] ${r.name} → ${r.ok ? "成功" : "失败"}\n${formatToolResultForModel(r)}`,
+  );
+  return [
+    "以下是本轮工具调用的执行结果：",
+    "",
+    ...parts.flatMap((p) => [p, ""]),
+    "请继续：任务未完成则继续调用工具；已完成则不要再调用工具，直接输出面向用户的最终总结。",
+  ].join("\n");
+}
+
+/** UI / 持久化用的回执内容上限（ToolResult.data 中的大字段会被裁剪） */
+const UI_DATA_LIMITS = {
+  contentChars: 800,
+  listEntries: 50,
+  issueFiles: 20,
+};
+
+/**
+ * 裁剪 ToolResult 中的大字段，供 UI 展示与会话持久化
+ * （readFile 的 data.content 是全量文件内容，直接存会话会撑爆 localStorage）。
+ * 模型回执走 formatToolResultForModel，不受本函数影响。
+ */
+export function compactToolResultForUI(result: ToolResult): ToolResult {
+  if (!result.ok || !result.data || typeof result.data !== "object") return result;
+  const data = { ...(result.data as Record<string, unknown>) };
+
+  if (result.name === "readFile" && typeof data.content === "string") {
+    if (data.content.length > UI_DATA_LIMITS.contentChars) {
+      data.content = `${data.content.slice(0, UI_DATA_LIMITS.contentChars)}…`;
+      data.truncated = true;
+    }
+  }
+  if (result.name === "listFiles" && Array.isArray(data.files) && data.files.length > UI_DATA_LIMITS.listEntries) {
+    data.files = (data.files as string[]).slice(0, UI_DATA_LIMITS.listEntries);
+    data.truncated = true;
+  }
+  if (result.name === "runAnalysis" && Array.isArray(data.files) && data.files.length > UI_DATA_LIMITS.issueFiles) {
+    data.files = data.files.slice(0, UI_DATA_LIMITS.issueFiles);
+  }
+  return { ...result, data };
+}
+
+// ---------------------------------------------------------------------------
 // 分析任务收集（分批读取）
 // ---------------------------------------------------------------------------
 

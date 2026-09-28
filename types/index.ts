@@ -1,3 +1,5 @@
+import type { AgentStep } from "@/lib/agent/loop";
+
 export interface AuditResponse {
   result?: string;
   error?: string;
@@ -52,6 +54,11 @@ export interface ConversationMessage {
   userPrompt?: string;
   /** 本次审计使用的模型 id（仅 user 消息） */
   modelId?: string;
+  /**
+   * Agent 思考-执行循环的步骤记录（仅 Agent 模式的 assistant 消息）：
+   * 每步含模型思考文本与工具调用/结果，随消息一起持久化。
+   */
+  steps?: AgentStep[];
 }
 
 /** 一个完整的审计会话 */

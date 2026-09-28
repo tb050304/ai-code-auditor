@@ -6,6 +6,8 @@ import ConversationSidebar from "@/components/console/ConversationSidebar";
 import ProjectSidebar from "@/components/file-tree/ProjectSidebar";
 import DiffViewer, { type DiffApplyAction } from "@/components/diff/DiffViewer";
 import { useAuditor } from "@/hooks/useAuditor";
+import { useAgentTools } from "@/hooks/useAgentTools";
+import { useAgentLoop } from "@/hooks/useAgentLoop";
 import { useASTAnalysis } from "@/hooks/useASTAnalysis";
 import { useConversations } from "@/hooks/useConversations";
 import { useProject } from "@/hooks/useProject";
@@ -44,6 +46,13 @@ export default function IDEPage() {
   // ---- 审计执行层 ----
   const { isAuditing, models, selectedModel, setSelectedModel, startAudit, stopAudit } =
     useAuditor();
+
+  // ---- Agent 工具桥接 + 思考-执行循环 ----
+  const { executeToolCall, isEmptyProject } = useAgentTools();
+  const { isAgentRunning, runAgentTask, stopAgent } = useAgentLoop({
+    executeToolCall,
+  });
+  const [agentMode, setAgentMode] = useState(false);
 
   // ---- AST 静态分析层 ----
   const { analysisResult, analyzeCode } = useASTAnalysis();
@@ -587,10 +596,57 @@ export default function IDEPage() {
     document.body.style.userSelect = "none";
   };
 
-  // ---------------- 运行审计 ----------------
+  // ---------------- Agent 模式：思考-执行循环 ----------------
+  const handleRunAgent = async () => {
+    if (isEmptyProject) {
+      alert("请先导入项目，Agent 需要操作项目文件。");
+      return;
+    }
+    // 未输入指令时给一个默认任务：审计并自动修复
+    const instruction =
+      userPrompt.trim() ||
+      "请对当前项目做一次代码审计：运行分析找出问题，自动修复所有可安全修复的问题，并总结修改内容与遗留风险。";
+
+    let conv = activeConversation;
+    if (!conv) {
+      conv = createConversation(undefined, instruction);
+    }
+    const convId = conv.id;
+
+    // 用户消息（code 存当前编辑器内容供回看）+ assistant 占位（带空 steps）
+    addUserMessage(convId, {
+      code: editorCode,
+      userPrompt: instruction,
+      modelId: selectedModel || undefined,
+    });
+    const assistantMessage = createMessage("assistant", {
+      status: "running",
+      content: "",
+      steps: [],
+    });
+    appendMessage(convId, assistantMessage);
+
+    // 循环由 useAgentLoop 驱动；每步经 onUpdate 实时写入会话消息
+    await runAgentTask(instruction, {
+      modelId: selectedModel || undefined,
+      onUpdate: ({ steps, content, status }) =>
+        updateMessage(convId, assistantMessage.id, {
+          steps,
+          content,
+          ...(status ? { status } : {}),
+        }),
+    });
+  };
+
+  // ---------------- 运行审计（普通模式 / Agent 模式） ----------------
   const handleRunAudit = async () => {
+    if (isAuditing || isAgentRunning) return;
+    if (agentMode) {
+      await handleRunAgent();
+      return;
+    }
     const code = editorCode;
-    if (!code.trim() || isAuditing) return;
+    if (!code.trim()) return;
 
     let conv = activeConversation;
     if (!conv) {
@@ -742,16 +798,18 @@ export default function IDEPage() {
       {/* 右侧：会话消息流 + 审计控制 */}
       <AgentConsole
         conversation={activeConversation}
-        isAuditing={isAuditing}
+        isAuditing={isAuditing || isAgentRunning}
         isHydrated={isHydrated}
         onRunAudit={handleRunAudit}
-        onStopAudit={stopAudit}
+        onStopAudit={() => (agentMode ? stopAgent() : stopAudit())}
         userPrompt={userPrompt}
         onUserPromptChange={setUserPrompt}
         astSummary={astSummary}
         width={consoleWidth}
         onToggleConversations={() => setShowConversationPanel((v) => !v)}
         conversationsOpen={showConversationPanel}
+        agentMode={agentMode}
+        onAgentModeChange={setAgentMode}
       />
 
       {/* Day 18 自动修复预览：左=修复前（已 auto-fix 快照），右=修复后，可逐块决定取舍 */}
