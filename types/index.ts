@@ -31,14 +31,21 @@ export interface ModelInfo {
 /** 消息的发送方 */
 export type MessageRole = "user" | "assistant";
 
-/**
- * 消息的生命周期状态。
+/** 消息的生命周期状态。
  * - running：正在流式生成（assistant）
  * - done：正常结束
  * - error：请求失败
  * - aborted：用户主动停止
  */
 export type MessageStatus = "idle" | "running" | "done" | "error" | "aborted";
+
+/**
+ * 对话模式（Day 22 起支持三态）：
+ * - audit：代码审计模式，围绕待审计代码产出结构化报告
+ * - chat ：通用编程模式，写新代码 / 解释代码 / 重构建议，可不携带代码
+ * - agent：Agent 思考-执行循环模式，可调用工具操作项目文件
+ */
+export type ChatMode = "audit" | "chat" | "agent";
 
 /** 会话中的单条消息 */
 export interface ConversationMessage {
@@ -54,6 +61,8 @@ export interface ConversationMessage {
   userPrompt?: string;
   /** 本次审计使用的模型 id（仅 user 消息） */
   modelId?: string;
+  /** 本条消息产生时的对话模式（Day 22；旧数据缺省视为 audit） */
+  mode?: ChatMode;
   /**
    * Agent 思考-执行循环的步骤记录（仅 Agent 模式的 assistant 消息）：
    * 每步含模型思考文本与工具调用/结果，随消息一起持久化。

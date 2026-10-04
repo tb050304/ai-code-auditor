@@ -2,20 +2,12 @@ import axios, { type AxiosRequestConfig } from "axios";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import OpenAI from "openai";
 import { ModelConfig, getModelConfig, getDefaultModelConfig } from "./models";
-import { buildUserContent } from "./messages";
-import type { AuditHistoryMessage } from "@/types";
-
-const systemPrompt = `
-你是一个资深的硅谷前端架构师与安全专家，拥有极高的代码品味。
-现在你需要对用户提交的代码进行严格的审查。
-
-请按照以下结构输出你的审计报告：
-### 🐞 1. 潜在 Bug & 安全隐患 (如果没有，请夸奖一下)
-### ⚡ 2. 性能与优雅度优化建议
-### 🛠️ 3. 重构代码演示 (仅针对核心问题部分)
-
-语气要求：专业、犀利、一针见血，可以用 Markdown 格式高亮重点。
-`;
+import {
+  buildChatUserContent,
+  buildUserContent,
+  getSystemPrompt,
+} from "./messages";
+import type { AuditHistoryMessage, ChatMode } from "@/types";
 
 export interface StreamChunk {
   content: string;
@@ -30,15 +22,16 @@ export interface ChatMessage {
 
 /**
  * 生成完整的 messages 数组：
- *   [system] + [可选历史多轮消息] + [当前一次用户审计请求]
+ *   [system] + [可选历史多轮消息] + [当前一次用户请求]
  * 历史由调用方（route）用 buildHistoryMessages 预先构造，
- * 保证 user 消息里的代码与当前审计的拼接逻辑一致。
+ * 保证 user 消息里的代码与当前请求的拼接逻辑一致。
  */
 function buildMessages(
   history: AuditHistoryMessage[] | undefined,
-  userContent: string
+  userContent: string,
+  mode: ChatMode = "audit",
 ): ChatMessage[] {
-  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt.trim() }];
+  const messages: ChatMessage[] = [{ role: "system", content: getSystemPrompt(mode) }];
   if (history && history.length > 0) {
     for (const item of history) {
       messages.push({ role: item.role, content: item.content });
@@ -52,7 +45,8 @@ export async function* analyzeCodeStream(
   code: string,
   modelId?: string,
   userPrompt?: string,
-  history?: AuditHistoryMessage[]
+  history?: AuditHistoryMessage[],
+  mode: ChatMode = "audit",
 ): AsyncGenerator<StreamChunk, void, unknown> {
   const config = modelId ? getModelConfig(modelId) : getDefaultModelConfig();
 
@@ -66,9 +60,10 @@ export async function* analyzeCodeStream(
     throw new Error(`服务器未配置 ${config.apiKeyEnv}`);
   }
 
-  // 单一来源构造“用户消息”文本
-  const userContent = buildUserContent(code, userPrompt);
-  const messages = buildMessages(history, userContent);
+  // 单一来源构造“用户消息”文本：chat 模式提问为主体、代码可选；audit 模式代码必填
+  const userContent =
+    mode === "chat" ? buildChatUserContent(code, userPrompt) : buildUserContent(code, userPrompt);
+  const messages = buildMessages(history, userContent, mode);
 
   yield* chatStream(messages, modelId);
 }
@@ -201,10 +196,11 @@ export async function analyzeCode(
   code: string,
   modelId?: string,
   userPrompt?: string,
-  history?: AuditHistoryMessage[]
+  history?: AuditHistoryMessage[],
+  mode: ChatMode = "audit",
 ): Promise<string> {
   let result = "";
-  for await (const chunk of analyzeCodeStream(code, modelId, userPrompt, history)) {
+  for await (const chunk of analyzeCodeStream(code, modelId, userPrompt, history, mode)) {
     if (chunk.done) break;
     result += chunk.content;
   }

@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import type { Conversation, ConversationMessage } from "@/types";
+import type { ChatMode, Conversation, ConversationMessage } from "@/types";
 import {
   createLocalStorageBackend,
   type StorageBackend,
@@ -205,12 +205,21 @@ export function useConversations() {
 
   /** 初始化一条用户消息并追加到会话，返回消息对象供调用方持有 */
   const addUserMessage = useCallback(
-    (conversationId: string, options: { code: string; userPrompt?: string; modelId?: string }) => {
+    (conversationId: string, options: {
+      code?: string;
+      userPrompt?: string;
+      modelId?: string;
+      mode?: ChatMode;
+    }) => {
+      const mode = options.mode ?? "audit";
       const message: ConversationMessage = createMessage("user", {
-        content: options.userPrompt?.trim() || "审计以下代码：",
+        content:
+          options.userPrompt?.trim() ||
+          (mode === "chat" ? "（空问题）" : "审计以下代码："),
         code: options.code,
         userPrompt: options.userPrompt,
         modelId: options.modelId,
+        mode,
         status: "idle",
       });
       appendMessage(conversationId, message);

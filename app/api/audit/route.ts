@@ -1,5 +1,5 @@
 import { analyzeCodeStream } from "@/lib/modelService";
-import type { AuditHistoryMessage } from "@/types";
+import type { AuditHistoryMessage, ChatMode } from "@/types";
 
 /** 从 unknown 中安全提取错误消息，避免在 catch 中使用 any */
 function errorMessage(error: unknown): string {
@@ -7,17 +7,27 @@ function errorMessage(error: unknown): string {
   return typeof error === "string" ? error : "未知错误";
 }
 
+const VALID_MODES: ReadonlySet<ChatMode> = new Set(["audit", "chat"]);
+
 export async function POST(req: Request) {
   try {
     // history 为可选的多轮上下文（此前 user/assistant 消息）
-    const { code, model, userPrompt, history }: {
-      code: string;
+    // mode 为对话模式（Day 22）：audit（默认，代码必填）/ chat（提问必填、代码可选）
+    const { code, model, userPrompt, history, mode }: {
+      code?: string;
       model?: string;
       userPrompt?: string;
       history?: AuditHistoryMessage[];
+      mode?: ChatMode;
     } = await req.json();
 
-    if (!code || typeof code !== "string" || code.trim() === "") {
+    const chatMode: ChatMode = mode && VALID_MODES.has(mode) ? mode : "audit";
+
+    if (chatMode === "chat") {
+      if (!userPrompt || typeof userPrompt !== "string" || userPrompt.trim() === "") {
+        return new Response("问题内容不能为空", { status: 400 });
+      }
+    } else if (!code || typeof code !== "string" || code.trim() === "") {
       return new Response("代码不能为空", { status: 400 });
     }
 
@@ -25,7 +35,13 @@ export async function POST(req: Request) {
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          for await (const chunk of analyzeCodeStream(code, model, userPrompt, history)) {
+          for await (const chunk of analyzeCodeStream(
+            code ?? "",
+            model,
+            userPrompt,
+            history,
+            chatMode,
+          )) {
             if (chunk.done) {
               controller.close();
               return;

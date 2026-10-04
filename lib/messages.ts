@@ -6,9 +6,9 @@
 // 这里作为唯一实现，前后端共同 import，保证模型输入格式一致。
 // ---------------------------------------------------------------------------
 
-import type { AuditHistoryMessage, Conversation, ConversationMessage } from "@/types";
+import type { AuditHistoryMessage, ChatMode, Conversation, ConversationMessage } from "@/types";
 
-/** 生成唯一 id：优先使用原生 crypto.randomUUID，失败时降级时间戳方案 */
+/** 生成唯一 id：优先使用原生 crypto.randomUUID，失败则降级时间戳方案 */
 export function createId(prefix = "msg"): string {
   try {
     return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -17,6 +17,41 @@ export function createId(prefix = "msg"): string {
   } catch {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// 系统提示（前后端共享的单一来源）
+// ---------------------------------------------------------------------------
+
+/** 审计模式系统提示：严格的代码审查报告 */
+export const AUDIT_SYSTEM_PROMPT = `
+你是一个资深的硅谷前端架构师与安全专家，拥有极高的代码品味。
+现在你需要对用户提交的代码进行严格的审查。
+
+请按照以下结构输出你的审计报告：
+### 🐞 1. 潜在 Bug & 安全隐患 (如果没有，请夸奖一下)
+### ⚡ 2. 性能与优雅度优化建议
+### 🛠️ 3. 重构代码演示 (仅针对核心问题部分)
+
+语气要求：专业、犀利、一针见血，可以用 Markdown 格式高亮重点。
+`.trim();
+
+/** 通用编程模式系统提示：写代码 / 解释代码 / 重构建议的多轮助手 */
+export const CHAT_SYSTEM_PROMPT = `
+你是一个资深的前端工程师与编程助手，运行在「AI 代码审计 IDE」中。
+用户可能让你：编写新代码、解释一段代码的作用、给出重构方案、排查 Bug、解答编程问题。
+
+回答要求：
+1. 优先给出可直接使用的代码，代码块标注语言类型；修改类需求给出完整可用片段，不要只给零散差异。
+2. 解释代码时先说结论（做什么、为什么），再展开关键细节，避免大段复述源码。
+3. 用户附带的代码是当前编辑器中的上下文，可能并不完整；不要臆测未给出的项目结构，必要时说明你的假设。
+4. 发现附带代码中有明显 Bug 或安全隐患时主动指出，但不要强行输出审计报告格式。
+5. 使用与用户相同的语言（默认中文），Markdown 排版。
+`.trim();
+
+/** 按对话模式取系统提示（agent 模式的提示由 lib/agent/prompt 单独提供） */
+export function getSystemPrompt(mode: ChatMode): string {
+  return mode === "chat" ? CHAT_SYSTEM_PROMPT : AUDIT_SYSTEM_PROMPT;
 }
 
 /**
@@ -30,6 +65,27 @@ export function buildUserContent(code: string, userPrompt?: string): string {
     content += `\n\n---\n\n## 用户补充要求\n\n${userPrompt.trim()}`;
   }
   return content;
+}
+
+/**
+ * 通用编程模式的用户消息文本（Day 22）。
+ * 与审计模式的区别：提问本身是主体，代码只是可选上下文；
+ * 没有代码时（如“帮我写一个防抖函数”）只发送用户问题。
+ */
+export function buildChatUserContent(code: string | undefined, userPrompt?: string): string {
+  const question = userPrompt?.trim() ?? "";
+  const hasCode = code && code.trim();
+  if (!hasCode) return question;
+  let content = `当前编辑器中的代码如下，供参考（不一定要逐行分析）：\n\n${code}`;
+  if (question) content += `\n\n---\n\n## 我的问题 / 需求\n\n${question}`;
+  return content;
+}
+
+/** 按消息的对话模式选择重建模型输入用的用户消息文本 */
+function rebuildUserContent(message: ConversationMessage): string {
+  return message.mode === "chat"
+    ? buildChatUserContent(message.code, message.userPrompt)
+    : buildUserContent(message.code ?? "", message.userPrompt);
 }
 
 /**
@@ -51,10 +107,17 @@ export function buildHistoryMessages(
     if (untilMessageId && message.id === untilMessageId) break;
 
     if (message.role === "user") {
-      // 用户消息只纳入完整提交（有 code 且已结束）
-      if (!message.code) continue;
+      // 用户消息只纳入完整提交且已结束的
       if (message.status === "running" || message.status === "error") continue;
-      history.push({ role: "user", content: buildUserContent(message.code, message.userPrompt) });
+      // chat 模式允许无代码：直接用提问重建；audit 模式仍必须有代码快照
+      if (message.mode === "chat") {
+        const content = rebuildUserContent(message);
+        if (!content) continue;
+        history.push({ role: "user", content });
+        continue;
+      }
+      if (!message.code) continue;
+      history.push({ role: "user", content: rebuildUserContent(message) });
     } else if (message.role === "assistant") {
       // 助手消息只纳入正常完成的内容，避免把中断/报错文本传给模型
       if (message.status !== "done" && message.status !== "idle") continue;

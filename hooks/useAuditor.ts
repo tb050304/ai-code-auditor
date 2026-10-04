@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import type { AuditHistoryMessage } from "@/types";
+import type { AuditHistoryMessage, ChatMode } from "@/types";
 
 export interface ModelInfo {
   id: string;
@@ -29,6 +29,8 @@ export interface StartAuditOptions {
   modelId?: string;
   /** 多轮历史（可选），由调用方从当前会话构造 */
   history?: AuditHistoryMessage[];
+  /** 对话模式（Day 22）：audit 代码审计（默认）/ chat 通用编程问答 */
+  mode?: ChatMode;
   /** 每次读取到增量时回调；参数为全量累积文本 */
   onChunk: (content: string) => void;
   /** 状态变化回调 */
@@ -78,8 +80,10 @@ export function useAuditor() {
 
   // ---------------- 启动审计（流式） ----------------
   const startAudit = useCallback(
-    async ({ code, userPrompt, modelId, history, onChunk, onStatus }: StartAuditOptions) => {
-      if (!code.trim()) return;
+    async ({ code, userPrompt, modelId, history, mode = "audit", onChunk, onStatus }: StartAuditOptions) => {
+      // audit 模式必须有代码；chat 模式提问为主体、代码可选
+      if (mode === "audit" && !code.trim()) return;
+      if (mode === "chat" && !userPrompt?.trim()) return;
 
       // 取消上一次请求，确保同一时刻只有一个流在跑
       if (abortRef.current) abortRef.current.abort();
@@ -99,6 +103,7 @@ export function useAuditor() {
             model: modelId || selectedModel,
             userPrompt,
             history,
+            mode,
           }),
           signal: controller.signal,
         });

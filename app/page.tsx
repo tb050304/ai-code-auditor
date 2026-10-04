@@ -18,7 +18,7 @@ import { isAnalyzableFile } from "@/lib/ast/batch-types";
 import { isFixable, type IssueFix } from "@/lib/ast/fixer";
 import { inferMonacoLanguage } from "@/lib/monaco-lang";
 import { createMessage, buildHistoryMessages } from "@/lib/messages";
-import type { Conversation } from "@/types";
+import type { ChatMode, Conversation } from "@/types";
 import type { ImportResult } from "@/lib/storage/import";
 import type { SnapshotMeta } from "@/lib/snapshots";
 
@@ -52,7 +52,8 @@ export default function IDEPage() {
   const { isAgentRunning, runAgentTask, stopAgent } = useAgentLoop({
     executeToolCall,
   });
-  const [agentMode, setAgentMode] = useState(false);
+  // 对话模式：audit 代码审计 / chat 通用编程 / agent 工具循环（Day 22 三态）
+  const [chatMode, setChatMode] = useState<ChatMode>("audit");
 
   // ---- AST 静态分析层 ----
   const { analysisResult, analyzeCode } = useASTAnalysis();
@@ -615,14 +616,16 @@ export default function IDEPage() {
 
     // 用户消息（code 存当前编辑器内容供回看）+ assistant 占位（带空 steps）
     addUserMessage(convId, {
-      code: editorCode,
+      code: editorCode || undefined,
       userPrompt: instruction,
       modelId: selectedModel || undefined,
+      mode: "agent",
     });
     const assistantMessage = createMessage("assistant", {
       status: "running",
       content: "",
       steps: [],
+      mode: "agent",
     });
     appendMessage(convId, assistantMessage);
 
@@ -638,45 +641,56 @@ export default function IDEPage() {
     });
   };
 
-  // ---------------- 运行审计（普通模式 / Agent 模式） ----------------
+  // ---------------- 运行对话（审计 / 通用编程 / Agent 三模式） ----------------
   const handleRunAudit = async () => {
     if (isAuditing || isAgentRunning) return;
-    if (agentMode) {
+    if (chatMode === "agent") {
       await handleRunAgent();
       return;
     }
+
     const code = editorCode;
-    if (!code.trim()) return;
+    // audit 必须有代码；chat 以提问为主体
+    if (chatMode === "audit" && !code.trim()) return;
+    if (chatMode === "chat" && !userPrompt.trim()) return;
 
     let conv = activeConversation;
     if (!conv) {
-      conv = createConversation(code, userPrompt);
+      conv = createConversation(code || undefined, userPrompt);
     }
     const convId = conv.id;
 
-    // 1) AST 静态分析
-    await analyzeCode(code);
+    // 1) audit 模式附带一次本地 AST 静态分析；chat 通用问答不强制
+    if (chatMode === "audit") {
+      await analyzeCode(code);
+    }
 
-    // 2) 追加用户消息 + 代码快照
+    // 2) 追加用户消息（chat 模式无代码时不存 code 快照）
     const userMessage = addUserMessage(convId, {
-      code,
+      code: code || undefined,
       userPrompt,
       modelId: selectedModel || undefined,
+      mode: chatMode,
     });
 
     // 3) 构造多轮上下文
     const history = buildHistoryMessages(conv, userMessage.id);
 
     // 4) 追加 assistant 占位
-    const assistantMessage = createMessage("assistant", { status: "running", content: "" });
+    const assistantMessage = createMessage("assistant", {
+      status: "running",
+      content: "",
+      mode: chatMode,
+    });
     appendMessage(convId, assistantMessage);
 
-    // 5) 流式审计
+    // 5) 流式请求（audit / chat 同一端点，mode 区分系统提示与消息格式）
     startAudit({
       code,
       userPrompt,
       modelId: selectedModel || undefined,
       history,
+      mode: chatMode,
       onChunk: (content) =>
         updateMessage(convId, assistantMessage.id, { status: "running", content }),
       onStatus: (status) => updateMessage(convId, assistantMessage.id, { status }),
@@ -801,15 +815,15 @@ export default function IDEPage() {
         isAuditing={isAuditing || isAgentRunning}
         isHydrated={isHydrated}
         onRunAudit={handleRunAudit}
-        onStopAudit={() => (agentMode ? stopAgent() : stopAudit())}
+        onStopAudit={() => (chatMode === "agent" ? stopAgent() : stopAudit())}
         userPrompt={userPrompt}
         onUserPromptChange={setUserPrompt}
         astSummary={astSummary}
         width={consoleWidth}
         onToggleConversations={() => setShowConversationPanel((v) => !v)}
         conversationsOpen={showConversationPanel}
-        agentMode={agentMode}
-        onAgentModeChange={setAgentMode}
+        chatMode={chatMode}
+        onChatModeChange={setChatMode}
       />
 
       {/* Day 18 自动修复预览：左=修复前（已 auto-fix 快照），右=修复后，可逐块决定取舍 */}
