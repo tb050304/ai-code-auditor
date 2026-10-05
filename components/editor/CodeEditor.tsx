@@ -17,6 +17,7 @@ import AnalysisProgress from "./AnalysisProgress";
 import IssuesPanel from "./IssuesPanel";
 import type { EditorTab } from "@/hooks/useEditorTabs";
 import type { BatchProgress, BatchAnalysisResult, FileAnalysisResult } from "@/lib/ast/batch-types";
+import { cursorAfterInsert } from "@/lib/code-blocks";
 
 interface ModelInfo {
   id: string;
@@ -54,11 +55,40 @@ interface IssueDecoration {
 }
 
 /** 本组件实际使用到的 Monaco 文本编辑器能力，避免把 ref 标成 any */
+interface MonacoPosition {
+  lineNumber: number;
+  column: number;
+}
+interface MonacoRangeLike {
+  startLineNumber: number;
+  startColumn: number;
+  endLineNumber: number;
+  endColumn: number;
+}
 interface MonacoCodeEditor {
   revealLineInCenter(lineNumber: number): void;
-  setPosition(position: { lineNumber: number; column: number }): void;
+  setPosition(position: MonacoPosition): void;
+  setSelection(selection: MonacoRangeLike): void;
+  revealPosition(position: MonacoPosition): void;
   focus(): void;
+  getPosition(): MonacoPosition | null;
+  getSelection(): MonacoSelection | null;
+  /** 执行一组编辑（会触发 onChange，并进入原生撤销栈） */
+  executeEdits(
+    source: string,
+    edits: Array<{ range: MonacoRangeLike; text: string }>,
+    // Monaco 实际要求 Selection[]；此处只透传内部构造的 Range，放宽为 unknown[] 避免结构依赖
+    endCursorState?: unknown[],
+  ): boolean;
   deltaDecorations(oldDecorations: string[], newDecorations: IssueDecoration[]): string[];
+  /** 光标/选区变化（用于上报"是否有选中内容"） */
+  onDidChangeCursorSelection(listener: () => void): { dispose(): void };
+}
+
+/** 只取使用到的 Monaco Selection 结构子集 */
+interface MonacoSelection extends MonacoRangeLike {
+  isEmpty(): boolean;
+  collapseToStart(): MonacoSelection;
 }
 
 interface CodeEditorProps {
@@ -100,11 +130,19 @@ interface CodeEditorProps {
   onAutoFixAll?: () => void;
   /** 修复流程进行中 */
   isAutoFixing?: boolean;
+  /** 编辑器选区"有无选中内容"变化时回调（Day 23：替换选中按钮可用性） */
+  onSelectionChange?: (hasSelection: boolean) => void;
 }
 
 // 暴露给父组件的方法
 export interface CodeEditorHandle {
   scrollToLine: (line: number) => void;
+  /** 在当前光标处插入代码片段（折叠选区），成功返回 true */
+  insertSnippet: (snippet: string) => boolean;
+  /** 用代码片段替换当前选中内容；无选区时返回 false */
+  replaceSelection: (snippet: string) => boolean;
+  /** 当前编辑器是否存在非空选区 */
+  hasSelection: () => boolean;
 }
 
 export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor(
@@ -138,6 +176,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     onAutoFixFile,
     onAutoFixAll,
     isAutoFixing = false,
+    onSelectionChange,
   },
   ref
 ) {
@@ -149,8 +188,11 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
   const isDraggingRef = useRef(false);
   const startYRef = useRef(0);
   const startHeightRef = useRef(0);
+  // 最新选区回调放 ref，避免选区订阅因 props 变化反复解绑
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  onSelectionChangeRef.current = onSelectionChange;
 
-  // 暴露 scrollToLine 方法给父组件
+  // 暴露编辑器操作给父组件
   useImperativeHandle(ref, () => ({
     scrollToLine: (line: number) => {
       if (editorRef.current) {
@@ -158,6 +200,54 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
         editorRef.current.setPosition({ lineNumber: line, column: 1 });
         editorRef.current.focus();
       }
+    },
+    hasSelection: () => {
+      const sel = editorRef.current?.getSelection();
+      return !!sel && !sel.isEmpty();
+    },
+    insertSnippet: (snippet: string) => {
+      const editor = editorRef.current;
+      const monaco = monacoRef.current;
+      const sel = editor?.getSelection();
+      if (!editor || !monaco || !sel) return false;
+      // 折叠到选区起点：插入不覆盖任何已有文本
+      const anchor = sel.collapseToStart();
+      const end = cursorAfterInsert(
+        anchor.startLineNumber,
+        anchor.startColumn,
+        snippet,
+      );
+      const ok = editor.executeEdits(
+        "agent-code-insert",
+        [{ range: anchor, text: snippet }],
+        [new monaco.Range(end.lineNumber, end.column, end.lineNumber, end.column)],
+      );
+      if (ok) {
+        editor.revealPosition(end);
+        editor.focus();
+      }
+      return ok;
+    },
+    replaceSelection: (snippet: string) => {
+      const editor = editorRef.current;
+      const monaco = monacoRef.current;
+      const sel = editor?.getSelection();
+      if (!editor || !monaco || !sel || sel.isEmpty()) return false;
+      const end = cursorAfterInsert(
+        sel.startLineNumber,
+        sel.startColumn,
+        snippet,
+      );
+      const ok = editor.executeEdits(
+        "agent-code-replace",
+        [{ range: sel, text: snippet }],
+        [new monaco.Range(end.lineNumber, end.column, end.lineNumber, end.column)],
+      );
+      if (ok) {
+        editor.revealPosition(end);
+        editor.focus();
+      }
+      return ok;
     },
   }));
 
@@ -296,9 +386,21 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     });
     resizeObserver.observe(container);
 
+    // 选区"有无选中内容"变化时上报（Day 23）；仅状态翻转时回调，避免光标移动引发重渲染
+    let lastHasSelection = false;
+    const selectionSub = editor.onDidChangeCursorSelection(() => {
+      const sel = editor.getSelection();
+      const has = !!sel && !sel.isEmpty();
+      if (has !== lastHasSelection) {
+        lastHasSelection = has;
+        onSelectionChangeRef.current?.(has);
+      }
+    });
+
     // 编辑器卸载时清理
     editor.onDidDispose(() => {
       resizeObserver.disconnect();
+      selectionSub.dispose();
       if (resizeRaf) cancelAnimationFrame(resizeRaf);
     });
 

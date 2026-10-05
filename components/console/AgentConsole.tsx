@@ -9,11 +9,106 @@
 //   4. 底部为补充要求输入框 + 运行 / 停止按钮（即“继续追问”入口）。
 // ---------------------------------------------------------------------------
 
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ChatMode, Conversation } from "@/types";
 import AgentSteps from "./AgentSteps";
+
+/** 从 ReactMarkdown 渲染出的 <code> 子节点中递归提取纯文本 */
+function nodeToText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeToText).join("");
+  if (React.isValidElement(node)) {
+    return nodeToText((node.props as { children?: React.ReactNode }).children);
+  }
+  return "";
+}
+
+interface CodeBlockActionsProps {
+  lang: string;
+  code: string;
+  hasEditorSelection: boolean;
+  onInsertCode?: (code: string) => void;
+  onReplaceCode?: (code: string) => void;
+  onCreateFile?: (code: string, lang: string) => void;
+}
+
+/** 代码块顶部操作条：复制 / 插入光标处 / 替换选中 / 新建文件（Day 23） */
+function CodeBlockActions({
+  lang,
+  code,
+  hasEditorSelection,
+  onInsertCode,
+  onReplaceCode,
+  onCreateFile,
+}: CodeBlockActionsProps) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch {
+      // 剪贴板权限/非安全上下文降级：临时 textarea + execCommand
+      const ta = document.createElement("textarea");
+      ta.value = code;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* 忽略：复制失败不影响其他操作 */
+      }
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }, [code]);
+
+  const btnCls =
+    "px-1.5 py-0.5 text-[10px] rounded border border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
+
+  return (
+    <div className="flex items-center gap-1 px-2 py-1 border-b border-slate-700 bg-slate-900/80">
+      <span className="text-[10px] text-slate-500 mr-auto truncate">
+        {lang ? `代码块 · ${lang}` : "代码块"}
+      </span>
+      <button type="button" className={btnCls} onClick={handleCopy} title="复制代码">
+        {copied ? "✓ 已复制" : "📋 复制"}
+      </button>
+      <button
+        type="button"
+        className={btnCls}
+        onClick={() => onInsertCode?.(code)}
+        disabled={!onInsertCode}
+        title="在编辑器当前光标处插入这段代码"
+      >
+        ⤵ 插入光标处
+      </button>
+      <button
+        type="button"
+        className={btnCls}
+        onClick={() => onReplaceCode?.(code)}
+        disabled={!onReplaceCode || !hasEditorSelection}
+        title={hasEditorSelection ? "替换编辑器中当前选中的内容" : "请先在编辑器中选中要替换的内容"}
+      >
+        ⇆ 替换选中
+      </button>
+      <button
+        type="button"
+        className={btnCls}
+        onClick={() => onCreateFile?.(code, lang)}
+        disabled={!onCreateFile}
+        title="把这段代码保存为项目中的新文件并打开"
+      >
+        📄 新建文件
+      </button>
+    </div>
+  );
+}
 
 interface ASTSummary {
   totalIssues: number;
@@ -37,6 +132,12 @@ interface AgentConsoleProps {
   /** 当前对话模式（Day 22）：审计 / 通用编程 / Agent */
   chatMode?: ChatMode;
   onChatModeChange?: (mode: ChatMode) => void;
+  // ---- Day 23：代码块写回编辑器 ----
+  /** 编辑器当前是否有选中内容（控制"替换选中"可用性） */
+  hasEditorSelection?: boolean;
+  onInsertCode?: (code: string) => void;
+  onReplaceCode?: (code: string) => void;
+  onCreateFile?: (code: string, lang: string) => void;
 }
 
 /** 模式的展示元数据（分段切换按钮、文案复用） */
@@ -73,6 +174,10 @@ export default function AgentConsole({
   conversationsOpen = false,
   chatMode = "audit",
   onChatModeChange,
+  hasEditorSelection = false,
+  onInsertCode,
+  onReplaceCode,
+  onCreateFile,
 }: AgentConsoleProps) {
   const messages = conversation?.messages ?? [];
   const lastMessage = messages[messages.length - 1];
@@ -105,6 +210,29 @@ export default function AgentConsole({
       : chatMode === "chat"
         ? { icon: "💬", title: "直接输入编程问题开始对话", desc: "写代码、解释代码、重构建议；编辑器中有打开文件时会自动附带上下文" }
         : { icon: "🔍", title: "输入代码后点击「运行审计」", desc: "支持多轮追问，历史与代码将保留在本会话中" };
+
+  // Markdown 渲染定制：围栏代码块附带"复制/插入/替换/新建文件"操作条
+  const markdownComponents = {
+    pre({ children }: { children?: React.ReactNode }) {
+      if (!React.isValidElement(children)) return <pre>{children}</pre>;
+      const codeProps = children.props as { className?: string; children?: React.ReactNode };
+      const lang = /language-([\w-]+)/.exec(codeProps.className ?? "")?.[1] ?? "";
+      const code = nodeToText(codeProps.children).replace(/\n$/, "");
+      return (
+        <div className="my-2 rounded-lg overflow-hidden border border-slate-700">
+          <CodeBlockActions
+            lang={lang}
+            code={code}
+            hasEditorSelection={hasEditorSelection}
+            onInsertCode={onInsertCode}
+            onReplaceCode={onReplaceCode}
+            onCreateFile={onCreateFile}
+          />
+          {children}
+        </div>
+      );
+    },
+  };
 
   return (
     <section
@@ -217,7 +345,7 @@ export default function AgentConsole({
                     <AgentSteps steps={message.steps} />
 
                     <article className="prose prose-invert prose-sm max-w-none prose-pre:bg-slate-800 prose-pre:border prose-pre:border-slate-700">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                         {message.content || (message.steps?.length ? "" : "*正在等待模型输出…*")}
                       </ReactMarkdown>
                     </article>

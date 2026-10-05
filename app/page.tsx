@@ -18,6 +18,8 @@ import { isAnalyzableFile } from "@/lib/ast/batch-types";
 import { isFixable, type IssueFix } from "@/lib/ast/fixer";
 import { inferMonacoLanguage } from "@/lib/monaco-lang";
 import { createMessage, buildHistoryMessages } from "@/lib/messages";
+import { suggestFileName } from "@/lib/code-blocks";
+import { collectFilePaths } from "@/lib/storage/file-tree";
 import type { ChatMode, Conversation } from "@/types";
 import type { ImportResult } from "@/lib/storage/import";
 import type { SnapshotMeta } from "@/lib/snapshots";
@@ -54,6 +56,8 @@ export default function IDEPage() {
   });
   // 对话模式：audit 代码审计 / chat 通用编程 / agent 工具循环（Day 22 三态）
   const [chatMode, setChatMode] = useState<ChatMode>("audit");
+  // 编辑器是否存在非空选区（Day 23：代码块"替换选中"按钮可用性）
+  const [hasEditorSelection, setHasEditorSelection] = useState(false);
 
   // ---- AST 静态分析层 ----
   const { analysisResult, analyzeCode } = useASTAnalysis();
@@ -186,6 +190,51 @@ export default function IDEPage() {
       }
     },
     [writeFile, openTab],
+  );
+
+  // ---- Day 23：AI 生成代码写回编辑器 ----
+  // 插入光标处：Monaco executeEdits 触发 onChange，Tab/独立编辑器内容自动同步
+  const handleInsertGeneratedCode = useCallback((code: string) => {
+    const ok = editorRef.current?.insertSnippet(code) ?? false;
+    if (!ok) alert("编辑器尚未就绪，请先打开或输入代码后再插入。");
+  }, []);
+
+  const handleReplaceGeneratedCode = useCallback((code: string) => {
+    const ok = editorRef.current?.replaceSelection(code) ?? false;
+    if (!ok) alert("请先在编辑器中选中要替换的内容，再点击「替换选中」。");
+  }, []);
+
+  // 新建文件：有活动项目则落盘到项目根（可带子目录）并打开；否则载入独立编辑器
+  const handleCreateGeneratedFile = useCallback(
+    async (code: string, lang: string) => {
+      if (fileTree) {
+        const existing = new Set(collectFilePaths(fileTree));
+        const defaultName = suggestFileName(lang, (n) => existing.has(`/${n}`));
+        const input = window.prompt(
+          "新文件保存到项目根目录（可包含子目录，如 src/hooks/useX.ts）：",
+          defaultName,
+        );
+        if (input === null) return;
+        const rel = input.trim().replace(/^\/+/, "");
+        if (!rel) return;
+        const path = `/${rel}`;
+        if (existing.has(path)) {
+          alert("该文件已存在，请换一个名称（生成代码不会覆盖已有文件）。");
+          return;
+        }
+        try {
+          await writeFile(path, code);
+          openTab(path, code);
+        } catch (e) {
+          console.error("生成代码新建文件失败:", e);
+          alert(`新建文件失败: ${e}`);
+        }
+      } else {
+        setStandaloneCode(code);
+        alert("当前没有导入项目，代码已载入编辑器；需要保存为文件请先导入或创建项目。");
+      }
+    },
+    [fileTree, writeFile, openTab],
   );
 
   // 新建文件夹
@@ -789,6 +838,7 @@ export default function IDEPage() {
         onAutoFixFile={handleAutoFixFile}
         onAutoFixAll={handleAutoFixAll}
         isAutoFixing={isAutoFixing}
+        onSelectionChange={setHasEditorSelection}
       />
 
       {/* 右侧：会话历史面板 */}
@@ -824,6 +874,10 @@ export default function IDEPage() {
         conversationsOpen={showConversationPanel}
         chatMode={chatMode}
         onChatModeChange={setChatMode}
+        hasEditorSelection={hasEditorSelection}
+        onInsertCode={handleInsertGeneratedCode}
+        onReplaceCode={handleReplaceGeneratedCode}
+        onCreateFile={handleCreateGeneratedFile}
       />
 
       {/* Day 18 自动修复预览：左=修复前（已 auto-fix 快照），右=修复后，可逐块决定取舍 */}
