@@ -76,14 +76,72 @@ export const TOOL_DEFINITIONS: Record<ToolName, ToolDefinition> = {
     ],
     mutating: true,
   },
+  // ---- Day 24：项目级 Agent ----
+  searchCode: {
+    name: "searchCode",
+    title: "搜索代码",
+    description:
+      "在整个项目中按文本或正则搜索内容，返回匹配的文件路径、行号与片段。用于定位符号、函数、引用位置。",
+    params: [
+      { name: "pattern", type: "string", description: "搜索关键词或正则表达式", required: true },
+      { name: "regex", type: "string", description: "是否按正则匹配，true/false，默认 false", required: false },
+    ],
+    mutating: false,
+  },
+  searchFiles: {
+    name: "searchFiles",
+    title: "按文件名搜索",
+    description:
+      "按文件名或路径片段搜索文件，支持通配符 *（任意长度）和 ?（单字符）。用于根据文件名快速定位。",
+    params: [
+      { name: "pattern", type: "string", description: "文件名或路径片段，如 *.test.ts 或 src/hooks/*", required: true },
+    ],
+    mutating: false,
+  },
+  readFiles: {
+    name: "readFiles",
+    title: "批量读取文件",
+    description:
+      "一次读取多个文件的完整文本，用于需要同时查看多个上下文的场景（如理解模块间依赖）。比多次调用 readFile 更高效。",
+    params: [
+      { name: "paths", type: "string[]", description: "文件路径数组，如 ['src/a.ts','src/b.ts']", required: true },
+    ],
+    mutating: false,
+  },
+  moveFile: {
+    name: "moveFile",
+    title: "移动/重命名文件",
+    description:
+      "把文件从 from 移动到 to（可跨目录、可改名），并自动更新项目中所有对该文件的 import 路径。写前会自动生成项目快照，可回退。",
+    params: [
+      { name: "from", type: "string", description: "源文件路径", required: true },
+      { name: "to", type: "string", description: "目标文件路径", required: true },
+    ],
+    mutating: true,
+  },
+  deleteFile: {
+    name: "deleteFile",
+    title: "删除文件",
+    description:
+      "删除项目内指定文件。删除前会自动生成项目快照，可回退。仅用于确认要移除的文件，不要用于临时清空。",
+    params: [
+      { name: "path", type: "string", description: "要删除的文件路径", required: true },
+    ],
+    mutating: true,
+  },
 };
 
 /** 工具目录的稳定顺序（供提示词渲染与面板列表） */
 export const TOOL_ORDER: ToolName[] = [
   "listFiles",
+  "searchFiles",
+  "searchCode",
   "readFile",
+  "readFiles",
   "runAnalysis",
   "applyAutoFix",
   "writeFile",
+  "moveFile",
+  "deleteFile",
   "createSnapshot",
 ];

@@ -19,6 +19,8 @@ import { useBatchAnalysis } from "@/hooks/useBatchAnalysis";
 import { analyzeFileContent, isAnalyzableFile } from "@/lib/ast/batch-types";
 import { isFixable, type IssueFix } from "@/lib/ast/fixer";
 import { collectFilePaths } from "@/lib/storage/file-tree";
+import { normalizePath } from "@/lib/storage/path";
+import { rewriteImportsForMove } from "@/lib/refactor";
 import {
   collectAnalysisTasks,
   createToolExecutor,
@@ -40,6 +42,7 @@ export function useAgentTools(): {
     writeFile,
     applyFileAutoFixes,
     createProjectSnapshot,
+    deleteNode,
   } = useProject();
   const { startAnalysis, fileResults, reanalyzeFile } = useBatchAnalysis();
 
@@ -120,6 +123,66 @@ export function useAgentTools(): {
     [createProjectSnapshot],
   );
 
+  // ---- Day 24：项目级 Agent ----
+
+  /**
+   * moveFile：先打项目快照 → 读全项目内容 → rewriteImportsForMove 计算重写 →
+   * 写新文件 → 回写被改 import 的引用方 → 删除旧文件 → 原地刷新分析。
+   */
+  const moveFile = useCallback(
+    async (from: string, to: string) => {
+      if (!fileTree) throw new Error("无活动项目或项目为空，请先导入项目");
+      const fromAbs = normalizePath(from);
+      const toAbs = normalizePath(to);
+      const all = collectFilePaths(fileTree);
+      if (!all.includes(fromAbs)) throw new Error(`源文件不存在：${fromAbs}`);
+      if (all.includes(toAbs)) throw new Error(`目标路径已存在：${toAbs}（不会覆盖已有文件）`);
+
+      const tasks = await collectAnalysisTasks(all, readFile);
+      const contents = new Map(tasks.map((t) => [t.path, t.content]));
+      const { changes, movedContent } = rewriteImportsForMove(contents, fromAbs, toAbs);
+
+      await createProjectSnapshot(`moveFile 前自动快照`, `${fromAbs} → ${toAbs}`);
+
+      await writeFile(toAbs, movedContent, {
+        source: "agent",
+        description: `Agent 移动文件：${fromAbs} → ${toAbs}`,
+      });
+      const updatedImporters: string[] = [];
+      for (const [p, content] of changes) {
+        await writeFile(p, content, {
+          source: "agent",
+          description: `Agent 更新 import（${fromAbs} → ${toAbs}）`,
+        });
+        updatedImporters.push(p);
+      }
+      await deleteNode(fromAbs);
+
+      // 原地刷新分析结果（best-effort；分析失败不影响移动本身）
+      try {
+        reanalyzeFile(toAbs, movedContent);
+        for (const [p, content] of changes) reanalyzeFile(p, content);
+      } catch {
+        /* 忽略 */
+      }
+      return { moved: toAbs, updatedImporters };
+    },
+    [fileTree, readFile, writeFile, deleteNode, createProjectSnapshot, reanalyzeFile],
+  );
+
+  /** deleteFile：先打项目快照再删除，保证可回退 */
+  const deleteFileTool = useCallback(
+    async (path: string) => {
+      if (!fileTree) throw new Error("无活动项目或项目为空，请先导入项目");
+      const abs = normalizePath(path);
+      const all = collectFilePaths(fileTree);
+      if (!all.includes(abs)) throw new Error(`文件不存在：${abs}`);
+      await createProjectSnapshot(`deleteFile 前自动快照`, `删除 ${abs}`);
+      await deleteNode(abs);
+    },
+    [fileTree, deleteNode, createProjectSnapshot],
+  );
+
   // 每次调用时用最新回调构造执行器（context 闭包依赖上述 memoized 回调）
   const executeToolCall = useCallback(
     async (call: ToolCall): Promise<ToolResult> => {
@@ -132,10 +195,22 @@ export function useAgentTools(): {
         getFixableFixes,
         applyAutoFixes,
         createSnapshot,
+        moveFile,
+        deleteFile: deleteFileTool,
       };
       return createToolExecutor(ctx)(call);
     },
-    [readFile, writeFile, listFiles, runAnalysis, getFixableFixes, applyAutoFixes, createSnapshot],
+    [
+      readFile,
+      writeFile,
+      listFiles,
+      runAnalysis,
+      getFixableFixes,
+      applyAutoFixes,
+      createSnapshot,
+      moveFile,
+      deleteFileTool,
+    ],
   );
 
   return { executeToolCall, isEmptyProject: !fileTree };

@@ -67,6 +67,32 @@ const VALIDATORS: Record<ToolName, (args: Record<string, unknown>) => ValidateAr
       return { ok: false, error: "参数 description 必须是字符串" };
     return { ok: true, value: { name: args.name, description: args.description } };
   },
+  // ---- Day 24：项目级 Agent ----
+  searchCode: (args) => {
+    if (!isNonEmptyString(args.pattern)) return { ok: false, error: "参数 pattern 必须是非空字符串" };
+    if (args.regex !== undefined && typeof args.regex !== "boolean")
+      return { ok: false, error: '参数 regex 必须是布尔值（true/false）' };
+    return { ok: true, value: { pattern: args.pattern, regex: args.regex } };
+  },
+  searchFiles: (args) => {
+    if (!isNonEmptyString(args.pattern)) return { ok: false, error: "参数 pattern 必须是非空字符串" };
+    return { ok: true, value: { pattern: args.pattern } };
+  },
+  readFiles: (args) => {
+    if (!isStringArray(args.paths)) return { ok: false, error: "参数 paths 必须是非空字符串数组" };
+    if (args.paths.length > 20) return { ok: false, error: "一次最多读取 20 个文件，请分批调用" };
+    return { ok: true, value: { paths: args.paths } };
+  },
+  moveFile: (args) => {
+    if (!isNonEmptyString(args.from)) return { ok: false, error: "参数 from 必须是非空字符串" };
+    if (!isNonEmptyString(args.to)) return { ok: false, error: "参数 to 必须是非空字符串" };
+    if (args.from === args.to) return { ok: false, error: "from 与 to 相同，无需移动" };
+    return { ok: true, value: { from: args.from, to: args.to } };
+  },
+  deleteFile: (args) => {
+    if (!isNonEmptyString(args.path)) return { ok: false, error: "参数 path 必须是非空字符串" };
+    return { ok: true, value: { path: args.path } };
+  },
 };
 
 /** 按工具目录校验调用参数；通过后返回该工具的强类型入参 */
@@ -106,6 +132,11 @@ export interface AgentToolContext {
     fixes: IssueFix[],
   ): Promise<{ changed: boolean; applied: number; skipped: number }>;
   createSnapshot(name: string, description?: string): Promise<{ id: string; name: string }>;
+  // ---- Day 24：项目级 Agent ----
+  /** 移动文件并重写项目内所有对它的 import；返回被改写的引用方文件清单 */
+  moveFile(from: string, to: string): Promise<{ moved: string; updatedImporters: string[] }>;
+  /** 删除文件（桥接层负责先打项目快照） */
+  deleteFile(path: string): Promise<void>;
 }
 
 export type ToolExecutor = (call: ToolCall) => Promise<ToolResult>;
@@ -210,6 +241,75 @@ export function createToolExecutor(ctx: AgentToolContext): ToolExecutor {
             duration: duration(),
           };
         }
+        // ---- Day 24：项目级 Agent ----
+        case "searchCode": {
+          const { pattern, regex } = validated.value as ToolArgsByName["searchCode"];
+          const all = await ctx.listFiles();
+          const results = await performSearchCode(all, ctx.readFile, pattern, regex ?? false);
+          return {
+            callId: call.id,
+            name: call.name,
+            ok: true,
+            data: results,
+            duration: duration(),
+          };
+        }
+        case "searchFiles": {
+          const { pattern } = validated.value as ToolArgsByName["searchFiles"];
+          const all = await ctx.listFiles();
+          const re = globToRegex(pattern);
+          const files = all.filter((p) => re.test(p));
+          return {
+            callId: call.id,
+            name: call.name,
+            ok: true,
+            data: { pattern, files, total: all.length },
+            duration: duration(),
+          };
+        }
+        case "readFiles": {
+          const { paths } = validated.value as ToolArgsByName["readFiles"];
+          const items = await Promise.all(
+            paths.map(async (path) => {
+              try {
+                const content = await ctx.readFile(path);
+                return { path, content, lineCount: content.split("\n").length, ok: true };
+              } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                return { path, content: "", lineCount: 0, ok: false, error: msg };
+              }
+            }),
+          );
+          return {
+            callId: call.id,
+            name: call.name,
+            ok: true,
+            data: { items },
+            duration: duration(),
+          };
+        }
+        case "moveFile": {
+          const { from, to } = validated.value as ToolArgsByName["moveFile"];
+          const result = await ctx.moveFile(from, to);
+          return {
+            callId: call.id,
+            name: call.name,
+            ok: true,
+            data: result,
+            duration: duration(),
+          };
+        }
+        case "deleteFile": {
+          const { path } = validated.value as ToolArgsByName["deleteFile"];
+          await ctx.deleteFile(path);
+          return {
+            callId: call.id,
+            name: call.name,
+            ok: true,
+            data: { path },
+            duration: duration(),
+          };
+        }
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -272,6 +372,36 @@ export function formatToolResultForModel(result: ToolResult): string {
       return String(data.message ?? "修复完成。");
     case "createSnapshot":
       return `已创建项目快照「${data.name}」（id: ${data.id}）。`;
+    // ---- Day 24：项目级 Agent ----
+    case "searchCode": {
+      const results = (data.results as Array<{ path: string; line: number; snippet: string }>) ?? [];
+      if (results.length === 0) return `未找到匹配内容：${data.pattern}`;
+      const lines = results.slice(0, 10).map((r) => `${r.path}:${r.line}  ${r.snippet}`);
+      const suffix = results.length > 10 ? `\n…（共 ${results.length} 条，已省略 ${results.length - 10} 条）` : "";
+      return `找到 ${results.length} 处匹配：\n${lines.join("\n")}${suffix}`;
+    }
+    case "searchFiles": {
+      const files = (data.files as string[]) ?? [];
+      if (files.length === 0) return `未找到匹配文件：${data.pattern}`;
+      const shown = files.slice(0, 50);
+      const suffix = files.length > shown.length ? `\n…（其余 ${files.length - shown.length} 个已省略）` : "";
+      return `共 ${files.length} 个文件匹配：\n${shown.join("\n")}${suffix}`;
+    }
+    case "readFiles": {
+      const items = (data.items as Array<{ path: string; content: string; lineCount: number; ok: boolean; error?: string }>) ?? [];
+      const lines = items.map((it) => {
+        if (!it.ok) return `--- ${it.path} 读取失败：${it.error} ---`;
+        const { text, truncated } = truncateText(it.content, 800);
+        return `--- ${it.path}（${it.lineCount} 行${truncated ? "，已截断" : ""}）---\n${text}`;
+      });
+      return lines.join("\n\n");
+    }
+    case "moveFile": {
+      const updated = (data.updatedImporters as string[]) ?? [];
+      return `已移动 ${data.moved}，自动更新了 ${updated.length} 个引用文件${updated.length ? `：\n${updated.map((p) => `  - ${p}`).join("\n")}` : ""}。`;
+    }
+    case "deleteFile":
+      return `已删除 ${data.path}（删除前已自动生成项目快照，可回退）。`;
     default:
       return `工具 ${result.name} 执行完成。`;
   }
@@ -327,7 +457,87 @@ export function compactToolResultForUI(result: ToolResult): ToolResult {
   if (result.name === "runAnalysis" && Array.isArray(data.files) && data.files.length > UI_DATA_LIMITS.issueFiles) {
     data.files = data.files.slice(0, UI_DATA_LIMITS.issueFiles);
   }
+  // Day 24：readFiles 的 content 是全量文本，逐个裁剪；searchCode 的 results 裁剪到 20 条
+  if (result.name === "readFiles" && Array.isArray(data.items)) {
+    data.items = (data.items as Array<Record<string, unknown>>).map((it) => {
+      if (typeof it.content === "string" && it.content.length > UI_DATA_LIMITS.contentChars) {
+        return { ...it, content: `${it.content.slice(0, UI_DATA_LIMITS.contentChars)}…`, truncated: true };
+      }
+      return it;
+    });
+  }
+  if (result.name === "searchCode" && Array.isArray(data.results) && data.results.length > 20) {
+    data.results = (data.results as unknown[]).slice(0, 20);
+    data.truncated = true;
+  }
   return { ...result, data };
+}
+
+// ---------------------------------------------------------------------------
+// 项目级搜索辅助（Day 24）
+// ---------------------------------------------------------------------------
+
+/** glob 风格通配符转正则：* 匹配任意长度，? 匹配单字符 */
+export function globToRegex(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(escaped, "i");
+}
+
+/** 单个文件的最大搜索字符数（超大文件跳过） */
+const MAX_SEARCH_FILE_CHARS = 200_000;
+/** searchCode 返回的最大匹配条数 */
+const MAX_SEARCH_MATCHES = 50;
+
+/**
+ * 在指定文件列表中搜索内容。
+ * - 纯文本：逐行 includes 匹配（大小写不敏感）
+ * - 正则：逐行 RegExp 匹配（大小写不敏感）
+ * 分批读取，批间让出主线程。
+ */
+export async function performSearchCode(
+  files: string[],
+  read: (path: string) => Promise<string>,
+  pattern: string,
+  useRegex: boolean,
+  batchSize = 20,
+): Promise<{ pattern: string; regex: boolean; results: Array<{ path: string; line: number; snippet: string }> }> {
+  const needle = useRegex ? null : pattern.toLowerCase();
+  const re = useRegex ? new RegExp(pattern, "i") : null;
+  const results: Array<{ path: string; line: number; snippet: string }> = [];
+
+  for (let i = 0; i < files.length; i += batchSize) {
+    if (results.length >= MAX_SEARCH_MATCHES) break;
+    const batch = files.slice(i, i + batchSize);
+    const contents = await Promise.all(
+      batch.map(async (path) => {
+        try {
+          return { path, content: await read(path) };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    for (const item of contents) {
+      if (!item || results.length >= MAX_SEARCH_MATCHES) continue;
+      if (item.content.length > MAX_SEARCH_FILE_CHARS) continue;
+      const lines = item.content.split("\n");
+      for (let ln = 0; ln < lines.length && results.length < MAX_SEARCH_MATCHES; ln++) {
+        const text = lines[ln];
+        const hit = re ? re.test(text) : text.toLowerCase().includes(needle!);
+        if (hit) {
+          const snippet = text.trim().slice(0, 120);
+          results.push({ path: item.path, line: ln + 1, snippet });
+        }
+      }
+    }
+    if (i + batchSize < files.length) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  return { pattern, regex: useRegex, results };
 }
 
 // ---------------------------------------------------------------------------

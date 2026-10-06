@@ -15,6 +15,8 @@ import { runAgentLoop, type AgentLoopMessage, type AgentStep } from "@/lib/agent
 import { createToolExecutor, type AgentToolContext } from "@/lib/agent/tool-executor";
 import { analyzeFileContent, isAnalyzableFile } from "@/lib/ast/batch-types";
 import { applyFixes, isFixable, type IssueFix } from "@/lib/ast/fixer";
+import { rewriteImportsForMove } from "@/lib/refactor";
+import { normalizePath } from "@/lib/storage/path";
 import type { ToolAnalysisSummary } from "@/lib/agent/tool-types";
 
 // ---------------------------------------------------------------------------
@@ -89,6 +91,38 @@ function makeMemoryContext(project: MemoryProject): AgentToolContext {
       const id = `snap-${project.snapshots.length + 1}`;
       project.snapshots.push({ id, name, content: new Map(project.files) });
       return { id, name };
+    },
+    // Day 24：moveFile 走真实 rewriteImportsForMove（跨文件 import 重写）
+    moveFile: async (from, to) => {
+      const fromAbs = normalizePath(from);
+      const toAbs = normalizePath(to);
+      const keys = new Map([...project.files.keys()].map((k) => [normalizePath(k), k]));
+      const fromKey = keys.get(fromAbs);
+      if (!fromKey) throw new Error(`源文件不存在：${fromAbs}`);
+      if (keys.has(toAbs)) throw new Error(`目标路径已存在：${toAbs}`);
+      // 先打项目快照（对应桥接层 createProjectSnapshot）
+      project.snapshots.push({
+        id: `snap-${project.snapshots.length + 1}`,
+        name: "moveFile 前自动快照",
+        content: new Map(project.files),
+      });
+      const contents = new Map([...project.files.entries()].map(([k, v]) => [normalizePath(k), v]));
+      const { changes, movedContent } = rewriteImportsForMove(contents, fromAbs, toAbs);
+      project.files.set(toAbs, movedContent);
+      for (const [p, c] of changes) project.files.set(p, c);
+      project.files.delete(fromKey);
+      return { moved: toAbs, updatedImporters: [...changes.keys()] };
+    },
+    deleteFile: async (path) => {
+      const abs = normalizePath(path);
+      const key = [...project.files.keys()].find((k) => normalizePath(k) === abs);
+      if (!key) throw new Error(`文件不存在：${abs}`);
+      project.snapshots.push({
+        id: `snap-${project.snapshots.length + 1}`,
+        name: "deleteFile 前自动快照",
+        content: new Map(project.files),
+      });
+      project.files.delete(key);
     },
   };
 }
@@ -325,5 +359,104 @@ describe("Agent 端到端联调（阶段三）", () => {
     expect(receipt).toContain("未知工具");
     // 文件未被破坏
     expect(project.files.get("a.ts")).toBe("let x = 1;\n");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Day 24：项目级 Agent（跨文件搜索与重构）
+// ---------------------------------------------------------------------------
+
+describe("Agent 项目级能力（Day 24）", () => {
+  const PROJECT_FILES: Array<[string, string]> = [
+    ["/src/utils.ts", "export const u = 1;\n"],
+    ["/src/a.ts", 'import { u } from "./utils";\nexport const a = u + 1;\n'],
+    ["/src/lib/b.ts", 'import { u } from "../utils";\nexport const b = u + 2;\n'],
+  ];
+
+  it("searchCode 定位引用 → moveFile 移动并自动重写 import → 验证无残留", async () => {
+    const project: MemoryProject = { files: new Map(PROJECT_FILES), snapshots: [] };
+    const executor = createToolExecutor(makeMemoryContext(project));
+    const model = scriptedModel([
+      // 第 1 轮：搜索谁引用了 utils
+      '先找谁在用 utils。\n```tool\n{"tool":"searchCode","args":{"pattern":"utils"}}\n```',
+      // 第 2 轮：移动到 lib 下
+      '把 utils 移到 lib 目录。\n```tool\n{"tool":"moveFile","args":{"from":"/src/utils.ts","to":"/src/lib/utils.ts"}}\n```',
+      // 第 3 轮：搜索旧路径残留
+      '确认没有残留旧引用。\n```tool\n{"tool":"searchCode","args":{"pattern":"\\"./utils\\"|\\"../utils\\"","regex":true}}\n```',
+      "已把 utils.ts 移入 lib 目录，a.ts 与 b.ts 的 import 已自动更新，无旧路径残留。",
+    ]);
+
+    const outcome = await runAgentLoop([{ role: "user", content: "把 src/utils.ts 移到 src/lib/ 下" }], {
+      callModel: model.callModel,
+      executeTool: executor,
+      onEvent: () => {},
+    });
+
+    expect(outcome.reason).toBe("final");
+    // 真实副作用：旧文件消失、新文件存在、两个引用方被改写
+    expect(project.files.has("/src/utils.ts")).toBe(false);
+    expect(project.files.get("/src/lib/utils.ts")).toBe("export const u = 1;\n");
+    expect(project.files.get("/src/a.ts")).toContain('from "./lib/utils"');
+    expect(project.files.get("/src/lib/b.ts")).toContain('from "./utils"');
+    // moveFile 前自动打了项目快照（安全点）
+    expect(project.snapshots.some((s) => s.name.includes("moveFile"))).toBe(true);
+    // 快照里保存的是移动前的完整状态
+    const snap = project.snapshots.find((s) => s.name.includes("moveFile"));
+    expect(snap?.content.get("/src/utils.ts")).toBe("export const u = 1;\n");
+    // 第 2 轮回执：报告了被更新的引用方
+    const moveReceipt = model.receivedMessages[2][4].content;
+    expect(moveReceipt).toContain("moveFile → 成功");
+    expect(moveReceipt).toContain("自动更新了 2 个引用文件");
+  });
+
+  it("readFiles 批量读取 + searchFiles 通配符定位", async () => {
+    const project: MemoryProject = { files: new Map(PROJECT_FILES), snapshots: [] };
+    const executor = createToolExecutor(makeMemoryContext(project));
+    const model = scriptedModel([
+      '```tool\n{"tool":"searchFiles","args":{"pattern":"*.ts"}}\n```',
+      '```tool\n{"tool":"readFiles","args":{"paths":["/src/a.ts","/src/lib/b.ts"]}}\n```',
+      "两个文件都依赖 utils，结构清晰。",
+    ]);
+
+    const outcome = await runAgentLoop([{ role: "user", content: "看看项目结构" }], {
+      callModel: model.callModel,
+      executeTool: executor,
+      onEvent: () => {},
+    });
+
+    expect(outcome.reason).toBe("final");
+    const searchReceipt = model.receivedMessages[1][2].content;
+    expect(searchReceipt).toContain("3 个文件匹配");
+    const readReceipt = model.receivedMessages[2][4].content;
+    expect(readReceipt).toContain("/src/a.ts");
+    expect(readReceipt).toContain("/src/lib/b.ts");
+    expect(readReceipt).toContain('from "./utils"');
+  });
+
+  it("deleteFile 删除后文件消失且留快照；删不存在的文件返回失败", async () => {
+    const project: MemoryProject = {
+      files: new Map([["/src/dead.ts", "// 废弃\n"], ["/src/alive.ts", "export const x = 1;\n"]]),
+      snapshots: [],
+    };
+    const executor = createToolExecutor(makeMemoryContext(project));
+    const model = scriptedModel([
+      '```tool\n{"tool":"deleteFile","args":{"path":"/src/dead.ts"}}\n```',
+      '```tool\n{"tool":"deleteFile","args":{"path":"/src/ghost.ts"}}\n```',
+      "已删除废弃文件；另一个路径不存在，未做任何修改。",
+    ]);
+
+    const outcome = await runAgentLoop([{ role: "user", content: "删掉废弃文件" }], {
+      callModel: model.callModel,
+      executeTool: executor,
+      onEvent: () => {},
+    });
+
+    expect(outcome.reason).toBe("final");
+    expect(project.files.has("/src/dead.ts")).toBe(false);
+    expect(project.files.has("/src/alive.ts")).toBe(true);
+    expect(project.snapshots.some((s) => s.name.includes("deleteFile"))).toBe(true);
+    const failReceipt = model.receivedMessages[2][4].content;
+    expect(failReceipt).toContain("deleteFile → 失败");
+    expect(failReceipt).toContain("文件不存在");
   });
 });

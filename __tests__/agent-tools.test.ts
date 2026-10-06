@@ -71,6 +71,13 @@ function makeContext(overrides: Partial<AgentToolContext> = {}): AgentToolContex
       calls.push(`createSnapshot:${name}`);
       return { id: "snap-1", name };
     },
+    moveFile: async (from, to) => {
+      calls.push(`moveFile:${from}:${to}`);
+      return { moved: to, updatedImporters: [] };
+    },
+    deleteFile: async (path) => {
+      calls.push(`deleteFile:${path}`);
+    },
     ...overrides,
   };
 }
@@ -140,6 +147,38 @@ describe("validateToolArgs", () => {
     expect(validateToolArgs("readFile", "path").ok).toBe(false);
     expect(validateToolArgs("readFile", [1]).ok).toBe(false);
   });
+
+  // ---- Day 24：项目级 Agent ----
+  it("searchCode：pattern 必填，regex 可选布尔", () => {
+    expect(validateToolArgs("searchCode", { pattern: "foo" }).ok).toBe(true);
+    expect(validateToolArgs("searchCode", { pattern: "foo", regex: true }).ok).toBe(true);
+    expect(validateToolArgs("searchCode", { pattern: "foo", regex: "yes" }).ok).toBe(false);
+    expect(validateToolArgs("searchCode", {}).ok).toBe(false);
+  });
+
+  it("searchFiles：pattern 必填非空", () => {
+    expect(validateToolArgs("searchFiles", { pattern: "*.ts" }).ok).toBe(true);
+    expect(validateToolArgs("searchFiles", { pattern: "  " }).ok).toBe(false);
+  });
+
+  it("readFiles：paths 必填，超 20 个报错", () => {
+    expect(validateToolArgs("readFiles", { paths: ["/a.ts", "/b.ts"] }).ok).toBe(true);
+    expect(validateToolArgs("readFiles", {}).ok).toBe(false);
+    expect(
+      validateToolArgs("readFiles", { paths: Array.from({ length: 21 }, (_, i) => `/${i}.ts`) }).ok,
+    ).toBe(false);
+  });
+
+  it("moveFile：from/to 必填且不能相同", () => {
+    expect(validateToolArgs("moveFile", { from: "/a.ts", to: "/b.ts" }).ok).toBe(true);
+    expect(validateToolArgs("moveFile", { from: "/a.ts" }).ok).toBe(false);
+    expect(validateToolArgs("moveFile", { from: "/a.ts", to: "/a.ts" }).ok).toBe(false);
+  });
+
+  it("deleteFile：path 必填", () => {
+    expect(validateToolArgs("deleteFile", { path: "/a.ts" }).ok).toBe(true);
+    expect(validateToolArgs("deleteFile", {}).ok).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -147,20 +186,37 @@ describe("validateToolArgs", () => {
 // ---------------------------------------------------------------------------
 
 describe("tool definitions", () => {
-  it("6 个工具全部注册，目录顺序完整", () => {
+  it("11 个工具全部注册，目录顺序完整", () => {
     expect(Object.keys(TOOL_DEFINITIONS).sort()).toEqual(
-      ["applyAutoFix", "createSnapshot", "listFiles", "readFile", "runAnalysis", "writeFile"].sort(),
+      [
+        "applyAutoFix",
+        "createSnapshot",
+        "deleteFile",
+        "listFiles",
+        "moveFile",
+        "readFile",
+        "readFiles",
+        "runAnalysis",
+        "searchCode",
+        "searchFiles",
+        "writeFile",
+      ].sort(),
     );
-    expect(TOOL_ORDER).toHaveLength(6);
+    expect(TOOL_ORDER).toHaveLength(11);
   });
 
   it("修改型工具都有 mutating 标记，只读工具为 false", () => {
     expect(TOOL_DEFINITIONS.writeFile.mutating).toBe(true);
     expect(TOOL_DEFINITIONS.applyAutoFix.mutating).toBe(true);
     expect(TOOL_DEFINITIONS.createSnapshot.mutating).toBe(true);
+    expect(TOOL_DEFINITIONS.moveFile.mutating).toBe(true);
+    expect(TOOL_DEFINITIONS.deleteFile.mutating).toBe(true);
     expect(TOOL_DEFINITIONS.readFile.mutating).toBe(false);
     expect(TOOL_DEFINITIONS.listFiles.mutating).toBe(false);
     expect(TOOL_DEFINITIONS.runAnalysis.mutating).toBe(false);
+    expect(TOOL_DEFINITIONS.searchCode.mutating).toBe(false);
+    expect(TOOL_DEFINITIONS.searchFiles.mutating).toBe(false);
+    expect(TOOL_DEFINITIONS.readFiles.mutating).toBe(false);
   });
 });
 
@@ -266,6 +322,89 @@ describe("createToolExecutor", () => {
     const r = await createToolExecutor(ctx)(makeCall("createSnapshot", { name: "x" }));
     expect(r.ok).toBe(false);
     expect(r.error).toBe("boom");
+  });
+
+  // ---- Day 24：项目级 Agent ----
+  it("searchCode：纯文本搜索返回命中行", async () => {
+    const ctx = makeContext({
+      listFiles: async () => ["/a.ts", "/b.ts"],
+      readFile: async (p) =>
+        p === "/a.ts" ? "const foo = 1;\nexport default foo;" : "const bar = 2;",
+    });
+    const r = await createToolExecutor(ctx)(makeCall("searchCode", { pattern: "foo" }));
+    expect(r.ok).toBe(true);
+    const data = r.data as { results: Array<{ path: string; line: number }> };
+    expect(data.results).toHaveLength(2);
+    expect(data.results[0]).toMatchObject({ path: "/a.ts", line: 1 });
+  });
+
+  it("searchCode：正则模式匹配", async () => {
+    const ctx = makeContext({
+      listFiles: async () => ["/a.ts"],
+      readFile: async () => "const foo1 = 1;\nconst bar = 2;",
+    });
+    const r = await createToolExecutor(ctx)(makeCall("searchCode", { pattern: "foo\\d+", regex: true }));
+    expect(r.ok).toBe(true);
+    const data = r.data as { results: Array<{ path: string; line: number }> };
+    expect(data.results).toHaveLength(1);
+  });
+
+  it("searchCode：宿主读取失败的文件被跳过", async () => {
+    const ctx = makeContext({
+      listFiles: async () => ["/bad.ts", "/good.ts"],
+      readFile: async (p) => {
+        if (p === "/bad.ts") throw new Error("gone");
+        return "needle here";
+      },
+    });
+    const r = await createToolExecutor(ctx)(makeCall("searchCode", { pattern: "needle" }));
+    expect(r.ok).toBe(true);
+    const data = r.data as { results: Array<{ path: string }> };
+    expect(data.results).toEqual([{ path: "/good.ts", line: 1, snippet: "needle here" }]);
+  });
+
+  it("searchFiles：通配符匹配路径", async () => {
+    const ctx = makeContext({
+      listFiles: async () => ["/src/a.ts", "/src/b.test.ts", "/docs/readme.md"],
+    });
+    const r = await createToolExecutor(ctx)(makeCall("searchFiles", { pattern: "*.test.ts" }));
+    expect(r.ok).toBe(true);
+    const data = r.data as { files: string[]; total: number };
+    expect(data.files).toEqual(["/src/b.test.ts"]);
+    expect(data.total).toBe(3);
+  });
+
+  it("readFiles：批量读取，单文件失败不影响整体", async () => {
+    const ctx = makeContext({
+      readFile: async (p) => {
+        if (p === "/bad.ts") throw new Error("gone");
+        return `content of ${p}`;
+      },
+    });
+    const r = await createToolExecutor(ctx)(makeCall("readFiles", { paths: ["/a.ts", "/bad.ts", "/b.ts"] }));
+    expect(r.ok).toBe(true);
+    const data = r.data as { items: Array<{ path: string; ok: boolean; error?: string }> };
+    expect(data.items).toHaveLength(3);
+    expect(data.items[0].ok).toBe(true);
+    expect(data.items[1].ok).toBe(false);
+    expect(data.items[1].error).toBe("gone");
+    expect(data.items[2].ok).toBe(true);
+  });
+
+  it("moveFile：from/to 透传给宿主", async () => {
+    const ctx = makeContext({
+      moveFile: async (from, to) => ({ moved: to, updatedImporters: ["/src/a.ts"] }),
+    });
+    const r = await createToolExecutor(ctx)(makeCall("moveFile", { from: "/src/u.ts", to: "/src/lib/u.ts" }));
+    expect(r.ok).toBe(true);
+    expect(r.data).toEqual({ moved: "/src/lib/u.ts", updatedImporters: ["/src/a.ts"] });
+  });
+
+  it("deleteFile：透传给宿主", async () => {
+    const ctx = makeContext();
+    const r = await createToolExecutor(ctx)(makeCall("deleteFile", { path: "/src/dead.ts" }));
+    expect(r.ok).toBe(true);
+    expect(ctx.calls).toContain("deleteFile:/src/dead.ts");
   });
 });
 

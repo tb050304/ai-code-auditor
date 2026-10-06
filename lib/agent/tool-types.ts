@@ -21,7 +21,12 @@ export type ToolName =
   | "listFiles"
   | "runAnalysis"
   | "applyAutoFix"
-  | "createSnapshot";
+  | "createSnapshot"
+  | "searchCode"
+  | "searchFiles"
+  | "readFiles"
+  | "moveFile"
+  | "deleteFile";
 
 /** 工具参数的静态描述（用于校验、提示词渲染与 Tool 面板展示） */
 export interface ToolParamSpec {
@@ -99,6 +104,35 @@ export interface CreateSnapshotArgs {
   description?: string;
 }
 
+export interface SearchCodeArgs {
+  /** 搜索内容；regex=true 时为正则表达式 */
+  pattern: string;
+  /** 是否使用正则匹配；默认 false（纯文本搜索） */
+  regex?: boolean;
+}
+
+export interface SearchFilesArgs {
+  /** 文件名或路径片段，支持 glob 风格通配符 * 和 ? */
+  pattern: string;
+}
+
+export interface ReadFilesArgs {
+  /** 要批量读取的文件路径数组 */
+  paths: string[];
+}
+
+export interface MoveFileArgs {
+  /** 源文件路径 */
+  from: string;
+  /** 目标文件路径 */
+  to: string;
+}
+
+export interface DeleteFileArgs {
+  /** 要删除的文件路径 */
+  path: string;
+}
+
 /** 工具名 → 校验后的入参类型映射 */
 export interface ToolArgsByName {
   readFile: ReadFileArgs;
@@ -107,6 +141,11 @@ export interface ToolArgsByName {
   runAnalysis: RunAnalysisArgs;
   applyAutoFix: ApplyAutoFixArgs;
   createSnapshot: CreateSnapshotArgs;
+  searchCode: SearchCodeArgs;
+  searchFiles: SearchFilesArgs;
+  readFiles: ReadFilesArgs;
+  moveFile: MoveFileArgs;
+  deleteFile: DeleteFileArgs;
 }
 
 /** runAnalysis 返回的分析摘要（执行器与模型之间的契约） */
