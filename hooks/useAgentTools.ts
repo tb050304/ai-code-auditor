@@ -29,13 +29,24 @@ import {
 } from "@/lib/agent/tool-executor";
 import type { ToolCall, ToolResult } from "@/lib/agent/tool-types";
 import type { Issue } from "@/lib/ast";
+import type { EditorTab } from "@/hooks/useEditorTabs";
 
-export function useAgentTools(): {
+export interface UseAgentToolsOptions {
+  /** 同步已打开 Tab 的内容（Agent 写入/移动/删除后刷新编辑器） */
+  reloadTab?: (path: string, content: string) => void;
+  /** 移除已打开的 Tab（文件被删除时） */
+  removeTab?: (path: string) => void;
+  /** 当前打开的 Tab 列表，用于判断某个路径是否处于打开状态 */
+  tabs?: EditorTab[];
+}
+
+export function useAgentTools(options: UseAgentToolsOptions = {}): {
   /** 执行一次工具调用（永远 resolve，失败以 ok=false 表达） */
   executeToolCall: ToolExecutor;
   /** 项目内是否没有任何文件（Agent 提示用） */
   isEmptyProject: boolean;
 } {
+  const { reloadTab, removeTab, tabs = [] } = options;
   const {
     fileTree,
     readFile,
@@ -45,6 +56,15 @@ export function useAgentTools(): {
     deleteNode,
   } = useProject();
   const { startAnalysis, fileResults, reanalyzeFile } = useBatchAnalysis();
+
+  /** 写盘后同步编辑器 Tab（文件已打开时才刷新） */
+  const syncTabAfterWrite = useCallback(
+    (path: string, content: string) => {
+      if (!reloadTab) return;
+      if (tabs.some((t) => t.path === path)) reloadTab(path, content);
+    },
+    [reloadTab, tabs],
+  );
 
   const listFiles = useCallback(async () => {
     if (!fileTree) throw new Error("无活动项目或项目为空，请先导入项目");
@@ -103,8 +123,9 @@ export function useAgentTools(): {
     async (path: string, fixes: IssueFix[]) => {
       const result = await applyFileAutoFixes(path, fixes);
       if (result.changed) {
-        // 原地刷新分析结果，问题面板/文件树标注同步
+        // 原地刷新分析结果，问题面板/文件树标注同步；同步编辑器 Tab
         reanalyzeFile(path, result.after);
+        syncTabAfterWrite(normalizePath(path), result.after);
       }
       return {
         changed: result.changed,
@@ -112,7 +133,7 @@ export function useAgentTools(): {
         skipped: result.skipped.length,
       };
     },
-    [applyFileAutoFixes, reanalyzeFile],
+    [applyFileAutoFixes, reanalyzeFile, syncTabAfterWrite],
   );
 
   const createSnapshot = useCallback(
@@ -148,12 +169,15 @@ export function useAgentTools(): {
         source: "agent",
         description: `Agent 移动文件：${fromAbs} → ${toAbs}`,
       });
+      // 源文件 Tab 先关掉，新文件 Tab 由用户手动打开（或后续指令自动打开）
+      if (removeTab) removeTab(fromAbs);
       const updatedImporters: string[] = [];
       for (const [p, content] of changes) {
         await writeFile(p, content, {
           source: "agent",
           description: `Agent 更新 import（${fromAbs} → ${toAbs}）`,
         });
+        syncTabAfterWrite(p, content);
         updatedImporters.push(p);
       }
       await deleteNode(fromAbs);
@@ -167,7 +191,7 @@ export function useAgentTools(): {
       }
       return { moved: toAbs, updatedImporters };
     },
-    [fileTree, readFile, writeFile, deleteNode, createProjectSnapshot, reanalyzeFile],
+    [fileTree, readFile, writeFile, deleteNode, createProjectSnapshot, reanalyzeFile, removeTab, syncTabAfterWrite],
   );
 
   /** deleteFile：先打项目快照再删除，保证可回退 */
@@ -179,8 +203,9 @@ export function useAgentTools(): {
       if (!all.includes(abs)) throw new Error(`文件不存在：${abs}`);
       await createProjectSnapshot(`deleteFile 前自动快照`, `删除 ${abs}`);
       await deleteNode(abs);
+      if (removeTab) removeTab(abs);
     },
-    [fileTree, deleteNode, createProjectSnapshot],
+    [fileTree, deleteNode, createProjectSnapshot, removeTab],
   );
 
   // 每次调用时用最新回调构造执行器（context 闭包依赖上述 memoized 回调）
@@ -188,8 +213,14 @@ export function useAgentTools(): {
     async (call: ToolCall): Promise<ToolResult> => {
       const ctx: AgentToolContext = {
         readFile,
-        writeFile: (path, content) =>
-          writeFile(path, content, { source: "agent", description: "Agent 写入文件" }),
+        writeFile: async (path, content) => {
+          const node = await writeFile(path, content, {
+            source: "agent",
+            description: "Agent 写入文件",
+          });
+          syncTabAfterWrite(normalizePath(path), content);
+          return node;
+        },
         listFiles,
         runAnalysis,
         getFixableFixes,
@@ -210,6 +241,7 @@ export function useAgentTools(): {
       createSnapshot,
       moveFile,
       deleteFileTool,
+      syncTabAfterWrite,
     ],
   );
 

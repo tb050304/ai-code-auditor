@@ -49,16 +49,6 @@ export default function IDEPage() {
   const { isAuditing, models, selectedModel, setSelectedModel, startAudit, stopAudit } =
     useAuditor();
 
-  // ---- Agent 工具桥接 + 思考-执行循环 ----
-  const { executeToolCall, isEmptyProject } = useAgentTools();
-  const { isAgentRunning, runAgentTask, stopAgent } = useAgentLoop({
-    executeToolCall,
-  });
-  // 对话模式：audit 代码审计 / chat 通用编程 / agent 工具循环（Day 22 三态）
-  const [chatMode, setChatMode] = useState<ChatMode>("audit");
-  // 编辑器是否存在非空选区（Day 23：代码块"替换选中"按钮可用性）
-  const [hasEditorSelection, setHasEditorSelection] = useState(false);
-
   // ---- AST 静态分析层 ----
   const { analysisResult, analyzeCode } = useASTAnalysis();
 
@@ -114,6 +104,16 @@ export default function IDEPage() {
     getFileIssues,
     reanalyzeFile,
   } = useBatchAnalysis();
+
+  // ---- Agent 工具桥接 + 思考-执行循环（依赖 Tab 同步回调，必须在 useEditorTabs 之后）----
+  const { executeToolCall, isEmptyProject } = useAgentTools({ reloadTab, removeTab, tabs });
+  const { isAgentRunning, runAgentTask, stopAgent } = useAgentLoop({
+    executeToolCall,
+  });
+  // 对话模式：audit 代码审计 / chat 通用编程 / agent 工具循环（Day 22 三态）
+  const [chatMode, setChatMode] = useState<ChatMode>("audit");
+  // 编辑器是否存在非空选区（Day 23：代码块"替换选中"按钮可用性）
+  const [hasEditorSelection, setHasEditorSelection] = useState(false);
 
   // 当前编辑器内容：有激活 Tab 时用 Tab 的内容，否则用单文件模式的 code
   const [standaloneCode, setStandaloneCode] = useState<string>(DEFAULT_CODE);
