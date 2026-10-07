@@ -1,9 +1,10 @@
 "use client";
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import { groupIssuesByFile, summarizeIssues, type NodeIssueSummary } from "@/lib/ast/issue-aggregate";
 import type { FileAnalysisResult } from "@/lib/ast/batch-types";
 import type { Issue } from "@/lib/ast";
 import { isFixable } from "@/lib/ast/fixer";
+import type { ReportFormat } from "@/lib/report";
 
 interface IssuesPanelProps {
   fileResults: Map<string, FileAnalysisResult>;
@@ -17,6 +18,8 @@ interface IssuesPanelProps {
   onAutoFixAll?: () => void;
   /** 修复流程进行中（禁用按钮避免并发写） */
   isFixing?: boolean;
+  /** Day 25：导出完整项目审计报告（Markdown / HTML） */
+  onExportReport?: (format: ReportFormat) => void;
 }
 
 type FilterType = "all" | "error" | "warning" | "info";
@@ -40,9 +43,24 @@ export default function IssuesPanel({
   onAutoFixFile,
   onAutoFixAll,
   isFixing = false,
+  onExportReport,
 }: IssuesPanelProps) {
   const [filter, setFilter] = useState<FilterType>("all");
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
+  const [exportOpen, setExportOpen] = useState(false);
+  const exportRef = useRef<HTMLDivElement>(null);
+
+  // 点击导出菜单外部时关闭
+  useEffect(() => {
+    if (!exportOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (exportRef.current && !exportRef.current.contains(e.target as Node)) {
+        setExportOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [exportOpen]);
 
   const grouped = useMemo(() => groupIssuesByFile(fileResults), [fileResults]);
 
@@ -125,6 +143,55 @@ export default function IssuesPanel({
             >
               🔧 一键修复 {totalFixable}
             </button>
+          )}
+          {onExportReport && (
+            <div ref={exportRef} className="relative ml-1">
+              <button
+                type="button"
+                onClick={() => setExportOpen((v) => !v)}
+                title="导出完整项目审计报告"
+                aria-haspopup="menu"
+                aria-expanded={exportOpen}
+                className="px-2 py-0.5 rounded bg-slate-700/60 text-slate-300 hover:bg-slate-600 transition-colors"
+              >
+                📥 导出报告 ▾
+              </button>
+              {exportOpen && (
+                <div
+                  role="menu"
+                  className="absolute z-20 left-0 top-full mt-1 w-44 rounded border border-slate-700 bg-slate-800 py-1 shadow-xl"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setExportOpen(false);
+                      onExportReport("markdown");
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-slate-300 hover:bg-slate-700"
+                  >
+                    <span aria-hidden>📝</span>
+                    <span>
+                      Markdown<span className="block text-[10px] text-slate-500">.md，适合贴到 PR / Issue</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setExportOpen(false);
+                      onExportReport("html");
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-slate-300 hover:bg-slate-700"
+                  >
+                    <span aria-hidden>🌐</span>
+                    <span>
+                      HTML<span className="block text-[10px] text-slate-500">.html，可直接打印为 PDF</span>
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
         <div className="flex items-center gap-0.5 text-xs">

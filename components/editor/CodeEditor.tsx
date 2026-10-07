@@ -132,6 +132,8 @@ interface CodeEditorProps {
   isAutoFixing?: boolean;
   /** 编辑器选区"有无选中内容"变化时回调（Day 23：替换选中按钮可用性） */
   onSelectionChange?: (hasSelection: boolean) => void;
+  /** Day 25：导出完整项目审计报告（Markdown / HTML） */
+  onExportReport?: (format: import("@/lib/report").ReportFormat) => void;
 }
 
 // 暴露给父组件的方法
@@ -177,6 +179,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
     onAutoFixAll,
     isAutoFixing = false,
     onSelectionChange,
+    onExportReport,
   },
   ref
 ) {
@@ -623,6 +626,7 @@ export default forwardRef<CodeEditorHandle, CodeEditorProps>(function CodeEditor
                   onAutoFixFile={onAutoFixFile}
                   onAutoFixAll={onAutoFixAll}
                   isFixing={isAutoFixing}
+                  onExportReport={onExportReport}
                 />
               </div>
             )}

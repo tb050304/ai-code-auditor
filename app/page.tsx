@@ -20,6 +20,7 @@ import { inferMonacoLanguage } from "@/lib/monaco-lang";
 import { createMessage, buildHistoryMessages } from "@/lib/messages";
 import { suggestFileName } from "@/lib/code-blocks";
 import { collectFilePaths } from "@/lib/storage/file-tree";
+import { buildReportData, downloadReport, type ReportFormat } from "@/lib/report";
 import type { ChatMode, Conversation } from "@/types";
 import type { ImportResult } from "@/lib/storage/import";
 import type { SnapshotMeta } from "@/lib/snapshots";
@@ -565,6 +566,34 @@ export default function IDEPage() {
   // 重新分析 = 和开始分析共用逻辑
   const handleReanalyze = handleStartBatchAnalysis;
 
+  // ---- Day 25：导出完整项目审计报告（Markdown / HTML）----
+  // 明细以当前 fileResults 为准（含自动修复后的原地刷新结果），文件数/耗时取最近一次批量分析
+  const handleExportReport = useCallback(
+    (format: ReportFormat) => {
+      if (!batchResult || fileResults.size === 0) {
+        alert("请先运行批量分析，有结果后再导出报告。");
+        return;
+      }
+      const projectName =
+        projects.find((p) => p.id === activeProjectId)?.name ?? "未命名项目";
+      const data = buildReportData(fileResults, {
+        projectName,
+        generatedAt: new Date().toISOString(),
+        totalFiles: batchResult.totalFiles,
+        analyzedFiles: batchResult.analyzedFiles,
+        failedFiles: batchResult.failedFiles,
+        duration: batchResult.duration,
+      });
+      try {
+        downloadReport(data, format);
+      } catch (e) {
+        console.error("导出报告失败:", e);
+        alert(`导出报告失败：${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [batchResult, fileResults, projects, activeProjectId],
+  );
+
   // 拖拽分隔条
   const dragState = useRef({ isDragging: false, startX: 0, startWidth: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
@@ -839,6 +868,7 @@ export default function IDEPage() {
         onAutoFixAll={handleAutoFixAll}
         isAutoFixing={isAutoFixing}
         onSelectionChange={setHasEditorSelection}
+        onExportReport={handleExportReport}
       />
 
       {/* 右侧：会话历史面板 */}
