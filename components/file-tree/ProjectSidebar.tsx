@@ -4,6 +4,8 @@ import FileDropzone from "@/components/file-dropzone/FileDropzone";
 import FileTree from "@/components/file-tree/FileTree";
 import ProjectSnapshotPanel from "@/components/snapshots/ProjectSnapshotPanel";
 import FileHistoryPanel, { type FileHistoryData } from "@/components/snapshots/FileHistoryPanel";
+import DashboardPanel from "@/components/dashboard/DashboardPanel";
+import type { BatchAnalysisResult } from "@/lib/ast/batch-types";
 import type { Project } from "@/lib/storage";
 import type { TreeNode } from "@/lib/storage/file-tree";
 import type { ImportResult } from "@/lib/storage/import";
@@ -33,6 +35,8 @@ interface ProjectSidebarProps {
   onReadCurrentFile?: (path: string) => Promise<string>;
   /** 写回文件内容（Diff 应用合并结果用，写前自动快照） */
   onWriteFile?: (path: string, content: string, meta?: SnapshotMeta) => Promise<unknown>;
+  // ---- Day 26 统计面板 ----
+  batchResult?: BatchAnalysisResult | null;
   // ---- 文件级快照（Day 12） ----
   /** 列出某文件的历史快照（新 → 旧） */
   onListFileHistory?: (path: string) => Promise<FileSnapshot[]>;
@@ -62,11 +66,14 @@ export default function ProjectSidebar({
   onWriteFile,
   onListFileHistory,
   onRestoreFileSnapshot,
+  batchResult,
 }: ProjectSidebarProps) {
   const [showDropzone, setShowDropzone] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [showSnapshotPanel, setShowSnapshotPanel] = useState(false);
+  /** Day 26：统计面板 */
+  const [showDashboard, setShowDashboard] = useState(false);
   /** 正在查看文件历史的路径（null = 关闭） */
   const [historyPath, setHistoryPath] = useState<string | null>(null);
   /** 文件历史数据（null = 加载中）；在打开/刷新等事件回调中加载，避免 effect 内 setState */
@@ -131,7 +138,15 @@ export default function ProjectSidebar({
         <span className="text-sm font-medium text-slate-200">项目</span>
         <div className="flex items-center gap-1">
           <button
-            className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 rounded transition-colors"
+            className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 rounded transition-colors disabled:opacity-40"
+            onClick={() => setShowDashboard(true)}
+            disabled={!activeProjectId}
+            title="项目统计仪表板"
+          >
+            📊 统计
+          </button>
+          <button
+            className="px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 rounded transition-colors disabled:opacity-40"
             onClick={() => setShowSnapshotPanel(true)}
             disabled={!activeProjectId}
             title="项目快照：打版本标签 / 恢复"
@@ -238,6 +253,19 @@ export default function ProjectSidebar({
           <div className="truncate">当前：{activeProject.name}</div>
           <div>{fileCount} 个文件</div>
         </div>
+      )}
+
+      {/* 统计面板 Day 26 */}
+      {showDashboard && (
+        <DashboardPanel
+          open
+          onClose={() => setShowDashboard(false)}
+          projectId={activeProjectId}
+          projectName={activeProject?.name ?? "未命名项目"}
+          fileResults={fileResults ?? new Map()}
+          batchResult={batchResult ?? null}
+          onOpenFile={onFileClick}
+        />
       )}
 
       {/* 项目快照面板：打开时才挂载，关闭即卸载，内部子视图状态天然重置 */}

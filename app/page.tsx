@@ -21,6 +21,7 @@ import { createMessage, buildHistoryMessages } from "@/lib/messages";
 import { suggestFileName } from "@/lib/code-blocks";
 import { collectFilePaths } from "@/lib/storage/file-tree";
 import { buildReportData, downloadReport, type ReportFormat } from "@/lib/report";
+import { appendTrendPoint } from "@/lib/dashboard";
 import type { ChatMode, Conversation } from "@/types";
 import type { ImportResult } from "@/lib/storage/import";
 import type { SnapshotMeta } from "@/lib/snapshots";
@@ -791,6 +792,32 @@ export default function IDEPage() {
     return () => window.removeEventListener("keydown", handleKey);
   }, [activeTabPath, isDirty, saveActiveTab, writeFile]);
 
+  // Day 26：批量分析完成后写入趋势点（统计面板的"问题趋势"数据源）
+  // 通过 batchResult 的引用变化判断新一轮分析完成；同一份结果重复 set 不会重复写入
+  const lastTrendKeyRef = useRef<string>("");
+  useEffect(() => {
+    if (!batchResult || !activeProjectId) return;
+    const key = `${activeProjectId}:${batchResult.duration}:${batchResult.totalFiles}:${batchResult.analyzedFiles}:${batchResult.totalIssues}`;
+    if (lastTrendKeyRef.current === key) return;
+    lastTrendKeyRef.current = key;
+
+    // 按严重程度统计当前 fileResults（与 batchResult 一一对应）
+    let error = 0, warning = 0, info = 0;
+    for (const r of fileResults.values()) {
+      if (!r.success) continue;
+      for (const i of r.issues) {
+        if (i.severity === "error") error++;
+        else if (i.severity === "warning") warning++;
+        else info++;
+      }
+    }
+    appendTrendPoint(activeProjectId, {
+      totalIssues: batchResult.totalIssues,
+      error, warning, info,
+      analyzedFiles: batchResult.analyzedFiles,
+    });
+  }, [batchResult, activeProjectId, fileResults]);
+
   // AST 摘要
   const astSummary = analysisResult?.success
     ? { totalIssues: analysisResult.totalIssues, highSeverity: analysisResult.highSeverity }
@@ -811,6 +838,7 @@ export default function IDEPage() {
         fileTree={fileTree}
         activeFilePath={activeTabPath}
         fileResults={fileResults}
+        batchResult={batchResult}
         onSelectProject={selectProject}
         onDeleteProject={deleteProject}
         onImported={handleImported}
