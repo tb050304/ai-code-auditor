@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
 import ContextMenu from "./ContextMenu";
 import type { ContextMenuItem } from "./ContextMenu";
 import type { TreeNode } from "@/lib/storage/file-tree";
@@ -157,26 +157,29 @@ export default function FileTree({
 
   const handleEditingSubmit = useCallback(
     (value: string) => {
-      if (!editing) return;
-      const trimmed = value.trim();
-      if (!trimmed) {
-        setEditing(null);
-        return;
-      }
+      setEditing((prev) => {
+        if (!prev) return prev;
+        const trimmed = value.trim();
+        if (!trimmed) return null;
 
-      if (editing.mode === "rename") {
-        if (trimmed !== basename(editing.path)) {
-          onRename?.(editing.path, trimmed);
+        if (prev.mode === "rename") {
+          if (trimmed !== basename(prev.path)) {
+            onRename?.(prev.path, trimmed);
+          }
+        } else if (prev.mode === "new-file") {
+          onCreateFile?.(prev.path, trimmed);
+        } else if (prev.mode === "new-dir") {
+          onCreateDir?.(prev.path, trimmed);
         }
-      } else if (editing.mode === "new-file") {
-        onCreateFile?.(editing.path, trimmed);
-      } else if (editing.mode === "new-dir") {
-        onCreateDir?.(editing.path, trimmed);
-      }
-      setEditing(null);
+        return null;
+      });
     },
-    [editing, onCreateFile, onCreateDir, onRename],
+    [onCreateFile, onCreateDir, onRename],
   );
+
+  const handleEditingCancel = useCallback(() => {
+    setEditing(null);
+  }, []);
 
   // 点击空白处关闭右键菜单
   const handleClick = useCallback(() => {
@@ -219,7 +222,7 @@ export default function FileTree({
         onFileClick={onFileClick}
         onContextMenu={handleContextMenu}
         onEditingSubmit={handleEditingSubmit}
-        onEditingCancel={() => setEditing(null)}
+        onEditingCancel={handleEditingCancel}
         onLoadChildren={onLoadChildren}
       />
       {contextMenu && (
@@ -252,7 +255,7 @@ interface TreeNodeRowProps {
   onLoadChildren?: (path: string) => Promise<void>;
 }
 
-function TreeNodeRow({
+function TreeNodeRowBase({
   node,
   depth,
   isRoot,
@@ -427,7 +430,59 @@ function TreeNodeRow({
   );
 }
 
-// ---------- 新建项的输入行 ----------
+/**
+ * Day 27 性能优化：memo + 自定义比较器
+ *
+ * `expanded` 是一个 Set，每次 toggle 任何节点都会产生新的 Set 引用。
+ * 默认的浅比较会认为所有子树都"变了"，导致整棵文件树重渲染。
+ *
+ * 自定义比较器只检查与"当前节点"相关的状态切片：
+ *   1. node 引用（buildTree 产出的 TreeNode 对象引用稳定）
+ *   2. expanded.has(node.path) 布尔值（本节点的展开状态）
+ *   3. activeFilePath === node.path 布尔值（本节点是否激活）
+ *   4. editing?.path === node.path 相关性 + editing.mode/initialValue
+ *   5. issueMap.get(node.path) 引用（本节点的问题摘要）
+ *   6. depth / isRoot 基本类型
+ *   7. 回调函数引用（全部 useCallback 稳定）
+ *
+ * 效果：toggle 节点 A 的展开状态时，只有 A 及其直接子树重渲染，
+ * 其余未受影响的子树（B、C…）因比较器判定"无变化"而跳过渲染。
+ */
+const TreeNodeRow = memo(
+  TreeNodeRowBase,
+  (prev, next) => {
+    // 1. node 引用
+    if (prev.node !== next.node) return false;
+    // 2. 本节点展开状态
+    if (prev.expanded.has(prev.node.path) !== next.expanded.has(next.node.path)) return false;
+    // 3. 激活文件相关性
+    if ((prev.activeFilePath === prev.node.path) !== (next.activeFilePath === next.node.path)) return false;
+    // 4. 编辑相关性：只有 editing.path === node.path 时本节点才需要响应
+    const prevEd = prev.editing?.path === prev.node.path ? prev.editing : null;
+    const nextEd = next.editing?.path === next.node.path ? next.editing : null;
+    if (prevEd !== nextEd) {
+      if (!prevEd || !nextEd) return false;
+      if (prevEd.mode !== nextEd.mode || prevEd.initialValue !== nextEd.initialValue) return false;
+    }
+    // 5. 问题摘要引用
+    if (prev.issueMap.get(prev.node.path) !== next.issueMap.get(next.node.path)) return false;
+    // 6. depth / isRoot
+    if (prev.depth !== next.depth) return false;
+    if (prev.isRoot !== next.isRoot) return false;
+    // 7. 回调引用（稳定 useCallback，检查以防万一）
+    if (
+      prev.onToggleExpand !== next.onToggleExpand ||
+      prev.onFileClick !== next.onFileClick ||
+      prev.onContextMenu !== next.onContextMenu ||
+      prev.onEditingSubmit !== next.onEditingSubmit ||
+      prev.onEditingCancel !== next.onEditingCancel ||
+      prev.onLoadChildren !== next.onLoadChildren
+    ) {
+      return false;
+    }
+    return true;
+  },
+);
 
 const NewItemRow = React.forwardRef<
   HTMLInputElement,

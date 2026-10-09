@@ -49,6 +49,19 @@ export function useBatchAnalysis(): UseBatchAnalysisReturn {
   const [error, setError] = useState<string | null>(null);
 
   const runIdRef = useRef(0);
+  // Day 27：进度回调 debounce — Worker 每个文件都会回调，1000 文件 = 1000 次 setProgress，
+  // 合并为 100ms 一次，减少 90%+ 的无效渲染
+  const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestProgressRef = useRef<BatchProgress | null>(null);
+  const flushProgress = useCallback(() => {
+    if (progressTimerRef.current) {
+      clearTimeout(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
+    if (latestProgressRef.current) {
+      setProgress(latestProgressRef.current);
+    }
+  }, []);
 
   const startAnalysis = useCallback(async (tasks: FileAnalysisTask[]) => {
     const runId = ++runIdRef.current;
@@ -57,6 +70,12 @@ export function useBatchAnalysis(): UseBatchAnalysisReturn {
     setProgress(null);
     setResult(null);
     setFileResults(new Map());
+    // Day 27：重置 debounce 状态
+    latestProgressRef.current = null;
+    if (progressTimerRef.current) {
+      clearTimeout(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
 
     try {
       const analyzer = getBatchAnalyzer();
@@ -64,7 +83,13 @@ export function useBatchAnalysis(): UseBatchAnalysisReturn {
       const finalResult = await analyzer.analyze(tasks, (p) => {
         // 过期的运行，忽略进度
         if (runId !== runIdRef.current) return;
-        setProgress(p);
+        // Day 27：debounce 进度更新，100ms 内多次回调合并为一次 setState
+        latestProgressRef.current = p;
+        if (progressTimerRef.current) return; // 已有定时器在等待
+        progressTimerRef.current = setTimeout(() => {
+          progressTimerRef.current = null;
+          setProgress(latestProgressRef.current);
+        }, 100);
       });
 
       if (runId !== runIdRef.current) return null;
@@ -78,16 +103,18 @@ export function useBatchAnalysis(): UseBatchAnalysisReturn {
       return null;
     } finally {
       if (runId === runIdRef.current) {
+        flushProgress(); // 确保最终进度立即渲染
         setIsAnalyzing(false);
       }
     }
-  }, []);
+  }, [flushProgress]);
 
   const cancelAnalysis = useCallback(() => {
     runIdRef.current++;
     getBatchAnalyzer().cancel();
+    flushProgress();
     setIsAnalyzing(false);
-  }, []);
+  }, [flushProgress]);
 
   const clearResult = useCallback(() => {
     setResult(null);

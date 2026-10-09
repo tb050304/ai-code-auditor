@@ -1,10 +1,10 @@
 "use client";
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import dynamic from "next/dynamic";
 import CodeEditor, { CodeEditorHandle } from "@/components/editor/CodeEditor";
 import AgentConsole from "@/components/console/AgentConsole";
-import ConversationSidebar from "@/components/console/ConversationSidebar";
 import ProjectSidebar from "@/components/file-tree/ProjectSidebar";
-import DiffViewer, { type DiffApplyAction } from "@/components/diff/DiffViewer";
+import type { DiffApplyAction } from "@/components/diff/DiffViewer";
 import { useAuditor } from "@/hooks/useAuditor";
 import { useAgentTools } from "@/hooks/useAgentTools";
 import { useAgentLoop } from "@/hooks/useAgentLoop";
@@ -25,6 +25,20 @@ import { appendTrendPoint } from "@/lib/dashboard";
 import type { ChatMode, Conversation } from "@/types";
 import type { ImportResult } from "@/lib/storage/import";
 import type { SnapshotMeta } from "@/lib/snapshots";
+
+// Day 27 性能优化：懒加载重组件（DiffViewer 含 Monaco DiffEditor，ConversationSidebar 会话历史面板）
+const DiffViewer = dynamic(() => import("@/components/diff/DiffViewer"), {
+  ssr: false,
+  loading: () => (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="text-slate-400 text-sm">加载差异对比视图...</div>
+    </div>
+  ),
+});
+const ConversationSidebar = dynamic(() => import("@/components/console/ConversationSidebar"), {
+  ssr: false,
+  loading: () => <div className="w-[260px] shrink-0 bg-slate-900" />,
+});
 
 export default function IDEPage() {
   const [userPrompt, setUserPrompt] = useState<string>("");
