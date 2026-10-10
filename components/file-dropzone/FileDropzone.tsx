@@ -8,6 +8,8 @@ import {
   inferProjectName,
 } from "@/lib/storage/import";
 import { getDefaultBackend } from "@/lib/storage";
+import { classifyError } from "@/lib/errors";
+import { useToast } from "@/components/ui/Toast";
 import type { ImportResult } from "@/lib/storage/import";
 
 interface FileDropzoneProps {
@@ -18,6 +20,7 @@ interface FileDropzoneProps {
 }
 
 export default function FileDropzone({ onImported, mode = "inline" }: FileDropzoneProps) {
+  const { push: pushToast } = useToast();
   const [isDragging, setIsDragging] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [progress, setProgress] = useState({ processed: 0, total: 0, currentFile: "" });
@@ -53,15 +56,29 @@ export default function FileDropzone({ onImported, mode = "inline" }: FileDropzo
         // 导入完成立即关闭 overlay 并通知父组件，拖拽和点击选择行为一致
         setIsImporting(false);
         setIsScanning(false);
+
+        // 被跳过的文件（过大 / 二进制 / 命中忽略规则）不静默吞掉，给一次汇总提示
+        if (importResult.skippedFiles > 0) {
+          const oversize = importResult.skippedReasons.filter((s) =>
+            s.reason.startsWith("文件过大"),
+          ).length;
+          pushToast(
+            "warning",
+            `已跳过 ${importResult.skippedFiles} 个文件` +
+              (oversize > 0 ? `，其中 ${oversize} 个超出单文件大小上限` : "") +
+              "（可在导入结果中查看明细）",
+          );
+        }
+
         onImported(importResult);
       } catch (e) {
         console.error("导入失败:", e);
-        alert(`导入失败: ${e}`);
+        pushToast("error", `导入失败：${classifyError(e).message}`);
         setIsImporting(false);
         setIsScanning(false);
       }
     },
-    [onImported],
+    [onImported, pushToast],
   );
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {

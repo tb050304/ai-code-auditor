@@ -7,7 +7,15 @@ import {
   buildUserContent,
   getSystemPrompt,
 } from "./messages";
+import { withRetry, classifyError, fetchWithTimeout } from "./errors";
 import type { AuditHistoryMessage, ChatMode } from "@/types";
+
+/**
+ * 连接阶段（直到响应头返回）的超时上限。
+ * 注意：fetchWithTimeout 在 fetch resolve（即收到响应头）后即清掉定时器，
+ * 因此这个值只约束「建连 + 首字节」，不会掐断后续的流式生成。
+ */
+const MODEL_CONNECT_TIMEOUT_MS = 30_000;
 
 export interface StreamChunk {
   content: string;
@@ -107,14 +115,26 @@ async function* analyzeWithOpenAICompatibleStream(
   const openai = new OpenAI({
     baseURL: "https://api.deepseek.com",
     apiKey: apiKey,
+    // 注入带超时的 fetch：SDK 默认无显式连接超时，断网时会一直挂着。
+    // 超时抛 Error("timeout")，由外层 classifyError 归为 timeout（可重试）。
+    fetch: (input, init) =>
+      fetchWithTimeout(input, { ...init, timeoutMs: MODEL_CONNECT_TIMEOUT_MS }),
   });
 
-  const stream = await openai.chat.completions.create({
-    model: config.model,
-    messages: messages as never,
-    temperature: 0.3,
-    stream: true,
-  });
+  const stream = await withRetry(
+    () =>
+      openai.chat.completions.create({
+        model: config.model,
+        messages: messages as never,
+        temperature: 0.3,
+        stream: true,
+      }),
+    {
+      maxRetries: 2,
+      onRetry: (err, attempt, delay) =>
+        console.warn(`[modelService] OpenAI 连接重试 ${attempt + 1}/2，${delay}ms 后重试：${classifyError(err).message}`),
+    },
+  );
 
   for await (const chunk of stream) {
     const content = chunk.choices[0]?.delta?.content || "";
@@ -150,15 +170,23 @@ async function* analyzeWithAxiosStream(
       : {}),
   };
 
-  const response = await axios.post(
-    config.endpoint,
+  const response = await withRetry(
+    () =>
+      axios.post(
+        config.endpoint,
+        {
+          model: config.model,
+          messages,
+          temperature: 0.3,
+          stream: true,
+        },
+        axiosConfig,
+      ),
     {
-      model: config.model,
-      messages,
-      temperature: 0.3,
-      stream: true,
+      maxRetries: 2,
+      onRetry: (err, attempt, delay) =>
+        console.warn(`[modelService] Axios 连接重试 ${attempt + 1}/2，${delay}ms 后重试：${classifyError(err).message}`),
     },
-    axiosConfig
   );
 
   const stream = response.data;
