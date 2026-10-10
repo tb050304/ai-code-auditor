@@ -22,6 +22,8 @@ import { suggestFileName } from "@/lib/code-blocks";
 import { collectFilePaths } from "@/lib/storage/file-tree";
 import { buildReportData, downloadReport, type ReportFormat } from "@/lib/report";
 import { appendTrendPoint } from "@/lib/dashboard";
+import { classifyError } from "@/lib/errors";
+import { useToast } from "@/components/ui/Toast";
 import type { ChatMode, Conversation } from "@/types";
 import type { ImportResult } from "@/lib/storage/import";
 import type { SnapshotMeta } from "@/lib/snapshots";
@@ -41,6 +43,7 @@ const ConversationSidebar = dynamic(() => import("@/components/console/Conversat
 });
 
 export default function IDEPage() {
+  const { push: pushToast } = useToast();
   const [userPrompt, setUserPrompt] = useState<string>("");
   const [consoleWidth, setConsoleWidth] = useState(450);
   // 右侧会话历史面板是否展开
@@ -149,10 +152,10 @@ export default function IDEPage() {
         openTab(path, content);
       } catch (e) {
         console.error("读取文件失败:", e);
-        alert(`读取文件失败: ${e}`);
+        pushToast("error", `读取文件失败: ${classifyError(e).message}`);
       }
     },
-    [readFile, openTab, activateTab, tabs],
+    [readFile, openTab, activateTab, tabs, pushToast],
   );
 
   // 点击问题面板中的问题 → 打开文件并滚动到指定行
@@ -202,23 +205,23 @@ export default function IDEPage() {
         openTab(path, "");
       } catch (e) {
         console.error("新建文件失败:", e);
-        alert(`新建文件失败: ${e}`);
+        pushToast("error", `新建文件失败: ${classifyError(e).message}`);
       }
     },
-    [writeFile, openTab],
+    [writeFile, openTab, pushToast],
   );
 
   // ---- Day 23：AI 生成代码写回编辑器 ----
   // 插入光标处：Monaco executeEdits 触发 onChange，Tab/独立编辑器内容自动同步
   const handleInsertGeneratedCode = useCallback((code: string) => {
     const ok = editorRef.current?.insertSnippet(code) ?? false;
-    if (!ok) alert("编辑器尚未就绪，请先打开或输入代码后再插入。");
-  }, []);
+    if (!ok) pushToast("warning", "编辑器尚未就绪，请先打开或输入代码后再插入。");
+  }, [pushToast]);
 
   const handleReplaceGeneratedCode = useCallback((code: string) => {
     const ok = editorRef.current?.replaceSelection(code) ?? false;
-    if (!ok) alert("请先在编辑器中选中要替换的内容，再点击「替换选中」。");
-  }, []);
+    if (!ok) pushToast("warning", "请先在编辑器中选中要替换的内容，再点击「替换选中」。");
+  }, [pushToast]);
 
   // 新建文件：有活动项目则落盘到项目根（可带子目录）并打开；否则载入独立编辑器
   const handleCreateGeneratedFile = useCallback(
@@ -235,7 +238,7 @@ export default function IDEPage() {
         if (!rel) return;
         const path = `/${rel}`;
         if (existing.has(path)) {
-          alert("该文件已存在，请换一个名称（生成代码不会覆盖已有文件）。");
+          pushToast("warning", "该文件已存在，请换一个名称（生成代码不会覆盖已有文件）。");
           return;
         }
         try {
@@ -243,14 +246,14 @@ export default function IDEPage() {
           openTab(path, code);
         } catch (e) {
           console.error("生成代码新建文件失败:", e);
-          alert(`新建文件失败: ${e}`);
+          pushToast("error", `新建文件失败: ${classifyError(e).message}`);
         }
       } else {
         setStandaloneCode(code);
-        alert("当前没有导入项目，代码已载入编辑器；需要保存为文件请先导入或创建项目。");
+        pushToast("info", "当前没有导入项目，代码已载入编辑器；需要保存为文件请先导入或创建项目。");
       }
     },
-    [fileTree, writeFile, openTab],
+    [fileTree, writeFile, openTab, pushToast],
   );
 
   // 新建文件夹
@@ -262,10 +265,10 @@ export default function IDEPage() {
         await mkdir(path);
       } catch (e) {
         console.error("新建文件夹失败:", e);
-        alert(`新建文件夹失败: ${e}`);
+        pushToast("error", `新建文件夹失败: ${classifyError(e).message}`);
       }
     },
-    [mkdir],
+    [mkdir, pushToast],
   );
 
   // 删除文件/文件夹
@@ -287,10 +290,10 @@ export default function IDEPage() {
         }
       } catch (e) {
         console.error("删除失败:", e);
-        alert(`删除失败: ${e}`);
+        pushToast("error", `删除失败: ${classifyError(e).message}`);
       }
     },
-    [deleteNode, removeTab, tabs],
+    [deleteNode, removeTab, tabs, pushToast],
   );
 
   // 重命名文件/文件夹
@@ -312,10 +315,10 @@ export default function IDEPage() {
         }
       } catch (e) {
         console.error("重命名失败:", e);
-        alert(`重命名失败: ${e}`);
+        pushToast("error", `重命名失败: ${classifyError(e).message}`);
       }
     },
-    [renameNode, renameTab, tabs],
+    [renameNode, renameTab, tabs, pushToast],
   );
 
   // Tab 保存（右键菜单触发）
@@ -390,7 +393,7 @@ export default function IDEPage() {
       if (fixes.length === 0) return;
       // 有未保存编辑时不动盘，避免覆盖用户正在编辑的内容
       if (tabs.some((t) => t.path === path) && isDirty(path)) {
-        alert("该文件有未保存的修改，请先保存（Ctrl+S）或撤销后再执行自动修复。");
+        pushToast("warning", "该文件有未保存的修改，请先保存（Ctrl+S）或撤销后再执行自动修复。");
         return;
       }
 
@@ -398,7 +401,8 @@ export default function IDEPage() {
       try {
         const r = await applyFileAutoFixes(path, fixes);
         if (!r.changed) {
-          alert(
+          pushToast(
+            "warning",
             `${fixes.length} 个修复均未生效（内容可能已过期或编辑区间冲突），请重新分析后再试。`,
           );
           return;
@@ -412,12 +416,12 @@ export default function IDEPage() {
           skippedCount: r.skipped.length,
         });
       } catch (e) {
-        alert(`自动修复失败: ${e instanceof Error ? e.message : String(e)}`);
+        pushToast("error", `自动修复失败: ${classifyError(e).message}`);
       } finally {
         setIsAutoFixing(false);
       }
     },
-    [isAutoFixing, fileResults, tabs, isDirty, applyFileAutoFixes, syncFixedFile],
+    [isAutoFixing, fileResults, tabs, isDirty, applyFileAutoFixes, syncFixedFile, pushToast],
   );
 
   /** 一键修复所有文件：逐文件应用（不弹预览，统一汇总），写前均有 auto-fix 快照 */
@@ -434,7 +438,7 @@ export default function IDEPage() {
       if (fixes.length > 0) pending.push({ path, fixes });
     }
     if (pending.length === 0) {
-      alert(dirty.length > 0 ? "可修复的文件都有未保存修改，请先保存。" : "没有可自动修复的问题。");
+      pushToast(dirty.length > 0 ? "warning" : "info", dirty.length > 0 ? "可修复的文件都有未保存修改，请先保存。" : "没有可自动修复的问题。");
       return;
     }
     const dirtyNote = dirty.length > 0 ? `\n\n以下 ${dirty.length} 个文件因有未保存修改将被跳过：\n${dirty.join("\n")}` : "";
@@ -460,17 +464,18 @@ export default function IDEPage() {
         appliedFixes += r.applied.length;
         skippedFixes += r.skipped.length;
       }
-      alert(
-        `✓ 已修复 ${changedFiles}/${pending.length} 个文件，应用 ${appliedFixes} 处` +
+      pushToast(
+        "success",
+        `已修复 ${changedFiles}/${pending.length} 个文件，应用 ${appliedFixes} 处` +
           `${skippedFixes > 0 ? `，跳过 ${skippedFixes} 处（内容过期/区间冲突）` : ""}。` +
-          `\n所有修改前均已自动快照，可在文件历史中回退。`,
+          ` 所有修改前均已自动快照，可在文件历史中回退。`,
       );
     } catch (e) {
-      alert(`一键修复中断: ${e instanceof Error ? e.message : String(e)}`);
+      pushToast("error", `一键修复中断: ${classifyError(e).message}`);
     } finally {
       setIsAutoFixing(false);
     }
-  }, [isAutoFixing, fileResults, tabs, isDirty, applyFileAutoFixes, syncFixedFile]);
+  }, [isAutoFixing, fileResults, tabs, isDirty, applyFileAutoFixes, syncFixedFile, pushToast]);
 
   /** 预览面板的最终决定：全部接受=保持 after；回退/合并=写回所选内容（再次自动快照） */
   const handleFixPreviewApply = useCallback(
@@ -586,7 +591,7 @@ export default function IDEPage() {
   const handleExportReport = useCallback(
     (format: ReportFormat) => {
       if (!batchResult || fileResults.size === 0) {
-        alert("请先运行批量分析，有结果后再导出报告。");
+        pushToast("info", "请先运行批量分析，有结果后再导出报告。");
         return;
       }
       const projectName =
@@ -603,10 +608,10 @@ export default function IDEPage() {
         downloadReport(data, format);
       } catch (e) {
         console.error("导出报告失败:", e);
-        alert(`导出报告失败：${e instanceof Error ? e.message : String(e)}`);
+        pushToast("error", `导出报告失败：${classifyError(e).message}`);
       }
     },
-    [batchResult, fileResults, projects, activeProjectId],
+    [batchResult, fileResults, projects, activeProjectId, pushToast],
   );
 
   // 拖拽分隔条
@@ -693,7 +698,7 @@ export default function IDEPage() {
   // ---------------- Agent 模式：思考-执行循环 ----------------
   const handleRunAgent = async () => {
     if (isEmptyProject) {
-      alert("请先导入项目，Agent 需要操作项目文件。");
+      pushToast("warning", "请先导入项目，Agent 需要操作项目文件。");
       return;
     }
     // 未输入指令时给一个默认任务：审计并自动修复

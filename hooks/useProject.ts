@@ -4,6 +4,8 @@ import { getDefaultBackend } from "@/lib/storage";
 import type { Project, FileNode } from "@/lib/storage";
 import { buildTree, type TreeNode } from "@/lib/storage/file-tree";
 import { dirname, joinPath } from "@/lib/storage/path";
+import { classifyError } from "@/lib/errors";
+import { useToast } from "@/components/ui/Toast";
 import {
   getSnapshotManager,
   getProjectSnapshotManager,
@@ -93,6 +95,9 @@ export function useProject(): UseProjectReturn {
   // 文件树按项目打标存储：切换项目后，旧项目的树不会被误渲染
   const [treeState, setTreeState] = useState<{ projectId: string; tree: TreeNode | null } | null>(null);
   const backendRef = useRef(getDefaultBackend());
+  const { push: pushToast } = useToast();
+  /** 存储配额告警只提示一次，避免每次保存都刷屏 */
+  const quotaWarnedRef = useRef(false);
   // 仅暴露当前项目的树；项目为空或树属于其他项目时派生为 null（无需 effect 同步清空）
   const fileTree = activeProjectId && treeState?.projectId === activeProjectId ? treeState.tree : null;
 
@@ -228,15 +233,24 @@ export function useProject(): UseProjectReturn {
             snapshotMeta ?? { source: "manual-save", description: "保存前自动快照" },
           );
         }
-      } catch {
-        // 文件不存在（新建）或快照存储异常：跳过快照，正常写入
+      } catch (e) {
+        // 文件不存在（新建）是正常路径，静默跳过；
+        // 但快照存储写失败（典型是配额耗尽）意味着「回退保护」静默失效，
+        // 这属于用户必须知道的能力降级，因此分类后单独提示一次。
+        if (classifyError(e).kind === "quota" && !quotaWarnedRef.current) {
+          quotaWarnedRef.current = true;
+          pushToast(
+            "warning",
+            "浏览器存储空间不足，本次修改未能生成快照（回退保护暂不可用）。请清理旧项目或快照后重试。",
+          );
+        }
       }
 
       const node = await backendRef.current.writeFile(activeProjectId, normalized, content);
       await refreshFileTree();
       return node;
     },
-    [activeProjectId, refreshFileTree],
+    [activeProjectId, refreshFileTree, pushToast],
   );
 
   const applyFileAutoFixes = useCallback(
